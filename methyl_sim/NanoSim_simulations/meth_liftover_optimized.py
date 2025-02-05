@@ -107,7 +107,7 @@ def apply_methylation_and_errors(seq_name, seq, meth_table, error_dir):
                     rev_index = len(seq_arr) - 1 - index_of_meth
                     if 0 <= rev_index < len(seq_arr) - 1:
                         if seq_arr[rev_index].upper() == 'G' and seq_arr[rev_index - 1].upper() == 'C':
-                            seq_arr[rev_index] = '1'
+                            seq_arr[rev_index - 1] = '1'
 
     return "".join(seq_arr)
 
