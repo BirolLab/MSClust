@@ -23,12 +23,14 @@ def load_methylation_marks(meth_file):
         for row in reader:
             chrom = row[0]
             pos = int(row[1])
+            end = int(row[2])
             prob = float(row[3])
             if chrom not in meth_table:
                 meth_table[chrom] = []
             if pos == -1 or prob < 0.5: # if it is not aligned to HG002 or if the frequency of methylation is smaller than 0.5 do not consider
                 continue
-            meth_table[chrom].append(pos)
+            for i in range((end-pos)/2): # for the islands, break those down to different methylation marks - essentially they are consecutive methylation marks
+                meth_table[chrom].append(pos+(i*2))
     return meth_table
 
 def load_error_profile(error_dir, seq_name):
@@ -51,7 +53,8 @@ def load_error_profile(error_dir, seq_name):
     return errors # Return empty list if no errors exist
 
 def apply_methylation_and_errors(seq_name, seq, meth_table, error_dir):
-    """Applies methylation and error shifts to the sequence."""
+    """Applies methylation and error shifts to the sequence.
+        This function assumes that there is no overlapping errors in a single read."""
     split_seq_name = seq_name.split('_')
     chrom = split_seq_name[0].split('-')[0]  # Extract chromosome name
     start_on_read = int(split_seq_name[1])
@@ -77,31 +80,33 @@ def apply_methylation_and_errors(seq_name, seq, meth_table, error_dir):
             break
         if start_on_read <= meth_pos:  # Methylation lies in the read region
             #for error_pos, error_type, error_length in errors:
-            while True:
-                if error_idx >= len_errors:
-                    break
+            while error_idx >= len_errors:
                 error_pos, error_type, error_length = errors[error_idx]   
-                error_idx += 1
+                
                 if error_pos + start_on_read <= meth_pos:
                     if error_type == 'ins':
                         shift += error_length
+                        error_idx += 1
                     elif error_type == 'del':
-                        shift -= error_length
                         if start_on_read + error_pos + error_length - 1 >= meth_pos:
                             skip = True  # Skip this site due to deletion
+                            break
+                        else:
+                            shift -= error_length
+                            error_idx += 1
                 else:
                     break
 
 
             index_of_meth = clipped_length + meth_pos - start_on_read + shift
-            if 0 <= index_of_meth < len(seq_arr) - 1:
+            if 0 <= index_of_meth < len(seq_arr) - 1 and not skip:
                 if strand == 'F':
-                    if seq_arr[index_of_meth].upper() == 'C' and seq_arr[index_of_meth + 1].upper() == 'G' and not skip:
+                    if seq_arr[index_of_meth].upper() == 'C' and seq_arr[index_of_meth + 1].upper() == 'G':
                         seq_arr[index_of_meth] = '1'
                 else:
                     rev_index = len(seq_arr) - 1 - index_of_meth
                     if 0 <= rev_index < len(seq_arr) - 1:
-                        if seq_arr[rev_index].upper() == 'G' and seq_arr[rev_index - 1].upper() == 'C' and not skip:
+                        if seq_arr[rev_index].upper() == 'G' and seq_arr[rev_index - 1].upper() == 'C':
                             seq_arr[rev_index] = '1'
 
     return "".join(seq_arr)
