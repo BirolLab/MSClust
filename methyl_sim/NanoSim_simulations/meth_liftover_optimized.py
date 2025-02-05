@@ -14,7 +14,7 @@ def parse_args():
     parser.add_argument("-o", "--output", type=str, required=False, default="methylated_reads.fa", help="Output FASTA file")
     return parser.parse_args()
 
-def load_methylation_marks(meth_file):
+def load_methylation_marks(meth_file, haplotype):
     """Loads methylation marks from BED file into a dictionary (chrom -> sorted list of positions)."""
     print("Loading methylation marks...")
     meth_table = {}
@@ -22,15 +22,16 @@ def load_methylation_marks(meth_file):
         reader = csv.reader(f, delimiter="\t")
         for row in reader:
             chrom = row[0]
-            pos = int(row[1])
-            end = int(row[2])
+            if haplotype == "maternal":
+                pos = int(row[1])
+            else:
+                pos = int(row[2])
             prob = float(row[3])
             if chrom not in meth_table:
                 meth_table[chrom] = []
             if pos == -1 or prob < 0.5: # if it is not aligned to HG002 or if the frequency of methylation is smaller than 0.5 do not consider
                 continue
-            for i in range((end-pos)/2): # for the islands, break those down to different methylation marks - essentially they are consecutive methylation marks
-                meth_table[chrom].append(pos+(i*2))
+            meth_table[chrom].append(pos)
     return meth_table
 
 def load_error_profile(error_dir, seq_name):
@@ -114,7 +115,8 @@ def apply_methylation_and_errors(seq_name, seq, meth_table, error_dir):
 def process_reads(args):
     """Main function to process FASTA reads with methylation and error corrections."""
     print("Starting processing...")
-    meth_table = load_methylation_marks(args.meth) if args.meth else {}
+    meth_table_pat = load_methylation_marks(args.meth, "paternal") if args.meth else {}
+    meth_table_mat = load_methylation_marks(args.meth, "maternal") if args.meth else {}
     start = time.time()
 
     with open(args.output, "w") as writer_fasta:
@@ -124,7 +126,10 @@ def process_reads(args):
             if count % 100000 == 0:
                 print(f"{count / 191251 * 100}% in {(time.time()-start)/60} mins.")
             seq_name, seq = record.id, str(record.seq)
-            updated_seq = apply_methylation_and_errors(seq_name, seq, meth_table, args.error_dir)
+            if "MATERNAL" in seq_name:
+                updated_seq = apply_methylation_and_errors(seq_name, seq, meth_table_mat, args.error_dir)
+            else:
+                updated_seq = apply_methylation_and_errors(seq_name, seq, meth_table_pat, args.error_dir)
             writer_fasta.write(f">{seq_name}\n{updated_seq.upper()}\n")
 
     print("Processing complete!")
