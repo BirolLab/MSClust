@@ -81,34 +81,42 @@ def apply_methylation_and_errors(seq_name, seq, meth_table, error_dir):
             break
         if start_on_read <= meth_pos:  # Methylation lies in the read region
             #for error_pos, error_type, error_length in errors:
-            while error_idx >= len_errors:
+            while error_idx < len_errors:
                 error_pos, error_type, error_length = errors[error_idx]   
-                
                 if error_pos + start_on_read <= meth_pos:
+                    print(f"error_idx: {error_idx} - error_pos: {error_pos+clipped_length} - error_type: {error_type} - error_length: {error_length}")
                     if error_type == 'ins':
                         shift += error_length
                         error_idx += 1
                     elif error_type == 'del':
                         if start_on_read + error_pos + error_length - 1 >= meth_pos:
                             skip = True  # Skip this site due to deletion
+                            print("-------------CpG site will not be seen due to deletion: "+str(meth_pos))
                             break
                         else:
                             shift -= error_length
                             error_idx += 1
+                    elif error_type == 'mis':
+                        error_idx += 1
                 else:
                     break
 
 
             index_of_meth = clipped_length + meth_pos - start_on_read + shift
+            print(f"{seq_name} - {index_of_meth} - shift: {shift} - shiftless: {index_of_meth - shift}")
             if 0 <= index_of_meth < len(seq_arr) - 1 and not skip:
                 if strand == 'F':
                     if seq_arr[index_of_meth].upper() == 'C' and seq_arr[index_of_meth + 1].upper() == 'G':
                         seq_arr[index_of_meth] = '1'
+                    else: 
+                        print(f"----------Effective Mismatch at: {index_of_meth} ")
                 else:
                     rev_index = len(seq_arr) - 1 - index_of_meth
                     if 0 <= rev_index < len(seq_arr) - 1:
                         if seq_arr[rev_index].upper() == 'G' and seq_arr[rev_index - 1].upper() == 'C':
                             seq_arr[rev_index - 1] = '1'
+                        else:
+                            print(f"-------Effective Mismatch at: {index_of_meth} ")
 
     return "".join(seq_arr)
 
