@@ -18,18 +18,28 @@
 
 #include "city.h"
 
-std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(const std::string& seq, unsigned k) {
+std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(const std::string& seq, unsigned k, std::unordered_set<uint64_t>& methylated_kmers_in_dataset) {
     std::vector<std::pair<uint64_t, bool>> all_kmers_hash;
     for (size_t i = 0; i < seq.size() - k + 1; ++i) {
         bool is_methylated = false;
         // locate the k-mer where the center base is a CpG site encoded as a 1 or a CpG site encoded as a C and the next base is a G
-        if (seq[i + k / 2] == '1' || (seq[i + k / 2] == 'C' && seq[i + k / 2 + 1] == 'G')) {
+        if (seq[i + k / 2] == '1' || (seq[i + k / 2] == 'T' && seq[i + k / 2 + 1] == 'G')) {
             if (seq[i + k / 2] == '1') {
                 is_methylated = true;
+            } else {
+                // check if the kmer is in the dataset
+                std::string kmer = seq.substr(i, k);
+                // covert all 1 to C
+                std::replace(kmer.begin(), kmer.end(), '1', 'T');
+                // upper case the kmer
+                std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
+                if (methylated_kmers_in_dataset.find(CityHash64(kmer.c_str(), k)) == methylated_kmers_in_dataset.end()) {
+                    continue;
+                }
             }
             std::string kmer = seq.substr(i, k);
             // covert all 1 to C
-            std::replace(kmer.begin(), kmer.end(), '1', 'C');
+            std::replace(kmer.begin(), kmer.end(), '1', 'T');
             // upper case the kmer
             std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
             all_kmers_hash.push_back(std::make_pair(CityHash64(kmer.c_str(), k), is_methylated));            
@@ -112,9 +122,47 @@ omp_set_num_threads(numThreads);
     std::vector<std::vector<bool>> bfs1;
     std::vector<std::vector<bool>> methylated_bfs1;
     // const variable 60 mil for bf
-    const size_t bfSize = 6000000000;
+    const size_t bfSize = 3000000000;
     // calculate size needed for a false positive rate of 0.1
     //const int bfSize = -1 * num_elements / log(0.1);
+
+std::cerr << "making methylated kmers dataset" << std::endl;
+
+std::unordered_set<uint64_t> methylated_kmers_in_dataset;
+
+size_t k = 25;
+
+for (const auto& line1 : lines1) {
+    // First, collect all records into a vector to allow indexing
+    std::vector<btllib::SeqReader::Record> records;
+    for (const auto& record : btllib::SeqReader(line1, btllib::SeqReader::Flag::SHORT_MODE)) {
+        records.push_back(record);
+    }
+
+    // Parallelize over the indexed records
+    std::vector<std::unordered_set<uint64_t>> thread_local_sets(omp_get_max_threads());
+
+    #pragma omp parallel for schedule(dynamic)
+    for (size_t i = 0; i < records.size(); ++i) {
+        const auto& record = records[i];
+        int tid = omp_get_thread_num();
+        auto& local_set = thread_local_sets[tid];
+
+        for (size_t j = 0; j + k <= record.seq.size(); ++j) {
+            if (record.seq[j + k / 2] == '1') {
+                std::string kmer = record.seq.substr(j, k);
+                std::replace(kmer.begin(), kmer.end(), '1', 'T');
+                std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
+                local_set.insert(CityHash64(kmer.c_str(), k));
+            }
+        }
+    }
+
+    // Merge thread-local sets into the global set
+    for (const auto& local_set : thread_local_sets) {
+        methylated_kmers_in_dataset.insert(local_set.begin(), local_set.end());
+    }
+}
 
     std::cerr << "making bloom filter" << std::endl;
     int num_lines = 0;
@@ -125,8 +173,8 @@ omp_set_num_threads(numThreads);
         methylated_bfs1.emplace_back(bfSize, 0);
 #pragma omp parallel
         for (const auto& record : btllib::SeqReader(
-                line1, btllib::SeqReader::Flag::LONG_MODE)) {
-            std::vector<std::pair<uint64_t, bool>> all_kmers = get_all_methylation_kmers(record.seq, 25);
+                line1, btllib::SeqReader::Flag::SHORT_MODE)) {
+            std::vector<std::pair<uint64_t, bool>> all_kmers = get_all_methylation_kmers(record.seq, 25, methylated_kmers_in_dataset);
             for (const auto& kmer : all_kmers) {
                 // create vector of a single value equal to kmer
                 //std::vector<uint64_t> kmer_vec = {kmer};
