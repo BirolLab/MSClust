@@ -13,38 +13,36 @@
 #include <argparse/argparse.hpp>
 
 #include "btllib/bloom_filter.hpp"
+#include "btllib/nthash.hpp"
 #include <btllib/seq.hpp>
 #include <btllib/seq_reader.hpp>
 
 #include "city.h"
 
-std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(const std::string& seq, unsigned k, std::unordered_set<uint64_t>& methylated_kmers_in_dataset, bool dev) {
+std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(const std::string& seq, unsigned k, btllib::BloomFilter& methylated_kmers_in_dataset) {
+    btllib::NtHash itr(seq, 1, k);
+    itr.roll();
     std::vector<std::pair<uint64_t, bool>> all_kmers_hash;
     for (size_t i = 0; i < seq.size() - k + 1; ++i) {
         bool is_methylated = false;
         // locate the k-mer where the center base is a CpG site encoded as a 1 or a CpG site encoded as a C and the next base is a G
-        char meth_base = dev ? '1' : 'C';
-        if (seq[i + k / 2] == meth_base || (seq[i + k / 2] == 'T' && seq[i + k / 2 + 1] == 'G')) {
-            if (seq[i + k / 2] == meth_base) {
+        char meth_base = 'C';
+        if ((seq[i + k / 2 - 1] == meth_base || seq[i + k / 2 - 1] == 'T') && seq[i + k / 2] == 'G') {
+            if (seq[i + k / 2 - 1] == meth_base) {
                 is_methylated = true;
             } else {
-                // check if the kmer is in the dataset
-                std::string kmer = seq.substr(i, k);
-                // covert all 1 to C
-                std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
-                // upper case the kmer
-                std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-                if (methylated_kmers_in_dataset.find(CityHash64(kmer.c_str(), k)) == methylated_kmers_in_dataset.end()) {
+                itr.sub({k/2 - 1}, {'C'});
+                bool found = methylated_kmers_in_dataset.contains(itr.hashes());
+                itr.sub({k/2 - 1}, {'T'});  // always revert
+
+                if (!found) {
+                    itr.roll();
                     continue;
                 }
             }
-            std::string kmer = seq.substr(i, k);
-            // covert all 1 to T
-            std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
-            // upper case the kmer
-            std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-            all_kmers_hash.push_back(std::make_pair(CityHash64(kmer.c_str(), k), is_methylated));            
+            all_kmers_hash.push_back(std::make_pair(itr.hashes()[0], is_methylated));            
         }
+        itr.roll();
     }
     return all_kmers_hash;
 }
@@ -130,49 +128,44 @@ omp_set_num_threads(numThreads);
 
 std::cerr << "making methylated kmers dataset" << std::endl;
 
-std::unordered_set<uint64_t> methylated_kmers_in_dataset;
+//std::unordered_set<uint64_t> methylated_kmers_in_dataset;
+btllib::BloomFilter methylated_kmers_in_dataset(3000000000, 1); // 10 million elements with 10% false positive rate
 
 
 
 
 for (const auto& line1 : lines1) {
     // First, collect all records into a vector to allow indexing
-    std::vector<btllib::SeqReader::Record> records;
-    for (const auto& record : btllib::SeqReader(line1, btllib::SeqReader::Flag::SHORT_MODE | btllib::SeqReader::Flag::FOLD_CASE)) {
-        records.push_back(record);
-    }
-
-    // Parallelize over the indexed records
-    std::vector<std::unordered_set<uint64_t>> thread_local_sets(omp_get_max_threads());
-
-    #pragma omp parallel for schedule(dynamic)
-    for (size_t i = 0; i < records.size(); ++i) {
-        const auto& record = records[i];
-        int tid = omp_get_thread_num();
-        auto& local_set = thread_local_sets[tid];
-
+    btllib::SeqReader reader(line1, btllib::SeqReader::Flag::SHORT_MODE);
+#pragma omp parallel
+    for (const auto record : reader) {
+        btllib::NtHash itr(record.seq, 1, k);
+        itr.roll();
         for (size_t j = 0; j + k <= record.seq.size(); ++j) {
-            char meth_base = dev ? '1' : 'C';
-            if (record.seq[j + k / 2] == meth_base) {
-                std::string kmer = record.seq.substr(j, k);
-                std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
-                std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-                local_set.insert(CityHash64(kmer.c_str(), k));
+            char meth_base = 'C';
+            if (record.seq[j + k / 2 - 1] == meth_base && record.seq[j + k / 2] == 'G') {
+                methylated_kmers_in_dataset.insert(itr.hashes());
             }
+            itr.roll();
         }
-    }
+    
+    }  
 
-    // Merge thread-local sets into the global set
-    for (const auto& local_set : thread_local_sets) {
-        methylated_kmers_in_dataset.insert(local_set.begin(), local_set.end());
-    }
+
+
 }
 
 std::unordered_map<uint64_t, size_t> hash_to_loc_map;
 
 size_t bfSize = 0;
-for (const auto& hash : methylated_kmers_in_dataset) {
-    hash_to_loc_map[hash] = bfSize++;
+#pragma omp parallel for schedule(static) default(none) shared(methylated_kmers_in_dataset, hash_to_loc_map) reduction(+ : bfSize)
+for (size_t i = 0; i < 3000000000ULL * 8; ++i) {
+    if (methylated_kmers_in_dataset.contains({i})) {
+        #pragma omp critical
+        {
+            hash_to_loc_map[i] = bfSize++;
+        }
+    }
 }
 
 std::cerr << "making bloom filter" << std::endl;
@@ -193,10 +186,10 @@ for (const auto& line1 : lines1) {
     for (size_t i = 0; i < records.size(); ++i) {
         auto& record = records[i];
         std::vector<std::pair<uint64_t, bool>> all_kmers =
-            get_all_methylation_kmers(record.seq, k, methylated_kmers_in_dataset, dev);
+            get_all_methylation_kmers(record.seq, k, methylated_kmers_in_dataset);
 
         for (const auto& kmer : all_kmers) {
-            size_t idx = hash_to_loc_map[kmer.first];
+            size_t idx = hash_to_loc_map[kmer.first % (3000000000ULL * 8)];
             final_bf[idx] = 1;
             if (kmer.second) {
                 final_meth_bf[idx] = 1;
