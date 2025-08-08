@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <getopt.h>
 #include <iostream>
@@ -18,7 +19,7 @@
 
 #include "city.h"
 
-std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(const std::string& seq, unsigned k, std::unordered_set<uint64_t>& methylated_kmers_in_dataset, bool dev) {
+std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(const std::string& seq, unsigned k, btllib::BloomFilter& methylated_kmers_in_dataset, bool dev) {
     std::vector<std::pair<uint64_t, bool>> all_kmers_hash;
     for (size_t i = 0; i < seq.size() - k + 1; ++i) {
         bool is_methylated = false;
@@ -34,7 +35,8 @@ std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(const std::stri
                 std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
                 // upper case the kmer
                 std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-                if (methylated_kmers_in_dataset.find(CityHash64(kmer.c_str(), k)) == methylated_kmers_in_dataset.end()) {
+                std::vector<uint64_t> hashes = {CityHash64(kmer.c_str(), k)};
+                if (!methylated_kmers_in_dataset.contains(hashes)) {
                     continue;
                 }
             }
@@ -55,6 +57,9 @@ int main(int argc, char* argv[]) {
     program.add_argument("-i")
         .required()
         .help("specify the first input file");
+    program.add_argument("-o")
+        .help("soutput_prefix")
+        .default_value("_");
 
     program.add_argument("-j")
         .required()
@@ -86,6 +91,7 @@ int main(int argc, char* argv[]) {
 
     std::string inputFile1 = program.get<std::string>("-i");
     std::string inputFile2 = program.get<std::string>("-j");
+    std::string prefix = program.get<std::string>("-o");
     bool dev = program.get<bool>("-d");
     int numThreads = program.get<int>("-t");
     unsigned k = program.get<unsigned>("-k");
@@ -130,51 +136,48 @@ omp_set_num_threads(numThreads);
 
 std::cerr << "making methylated kmers dataset" << std::endl;
 
-std::unordered_set<uint64_t> methylated_kmers_in_dataset;
+//std::unordered_set<uint64_t> methylated_kmers_in_dataset;
+btllib::BloomFilter methylated_kmers_in_dataset(30000000000, 1);
 
 
 
+int num_lines_2 = 0;
 
 for (const auto& line1 : lines1) {
-    // First, collect all records into a vector to allow indexing
-    std::vector<btllib::SeqReader::Record> records;
-    for (const auto& record : btllib::SeqReader(line1, btllib::SeqReader::Flag::SHORT_MODE | btllib::SeqReader::Flag::FOLD_CASE)) {
-        records.push_back(record);
-    }
+    std::cerr << num_lines_2 << std::endl;
+    num_lines_2++;
 
-    // Parallelize over the indexed records
-    std::vector<std::unordered_set<uint64_t>> thread_local_sets(omp_get_max_threads());
+btllib::SeqReader reader(line1, btllib::SeqReader::Flag::SHORT_MODE);
 
-    #pragma omp parallel for schedule(dynamic)
-    for (size_t i = 0; i < records.size(); ++i) {
-        const auto& record = records[i];
-        int tid = omp_get_thread_num();
-        auto& local_set = thread_local_sets[tid];
 
+#pragma omp parallel
+    for (const auto record : reader) {
         for (size_t j = 0; j + k <= record.seq.size(); ++j) {
             char meth_base = dev ? '1' : 'C';
             if (record.seq[j + k / 2] == meth_base) {
                 std::string kmer = record.seq.substr(j, k);
                 std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
                 std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-                local_set.insert(CityHash64(kmer.c_str(), k));
+                std::vector<uint64_t> hashes = {CityHash64(kmer.c_str(), k)};
+                methylated_kmers_in_dataset.insert(hashes);
             }
         }
-    }
-
-    // Merge thread-local sets into the global set
-    for (const auto& local_set : thread_local_sets) {
-        methylated_kmers_in_dataset.insert(local_set.begin(), local_set.end());
     }
 }
 
 std::unordered_map<uint64_t, size_t> hash_to_loc_map;
+std::atomic<size_t> bfSize(0);
 
-size_t bfSize = 0;
-for (const auto& hash : methylated_kmers_in_dataset) {
-    hash_to_loc_map[hash] = bfSize++;
+#pragma omp parallel for schedule(static)
+for (uint64_t i = 0; i < 30000000000ULL * 8; ++i) {
+    if (methylated_kmers_in_dataset.contains({i})) {  // Bloom filter says 'possibly present'
+        size_t index = bfSize.fetch_add(1, std::memory_order_relaxed);  // unique dense index
+        #pragma omp critical
+        {
+            hash_to_loc_map[i] = index;
+        }
+    }
 }
-
 std::cerr << "making bloom filter" << std::endl;
 int num_lines = 0;
 
@@ -196,7 +199,7 @@ for (const auto& line1 : lines1) {
             get_all_methylation_kmers(record.seq, k, methylated_kmers_in_dataset, dev);
 
         for (const auto& kmer : all_kmers) {
-            size_t idx = hash_to_loc_map[kmer.first];
+            size_t idx = hash_to_loc_map[kmer.first % (30000000000ULL * 8)];
             final_bf[idx] = 1;
             if (kmer.second) {
                 final_meth_bf[idx] = 1;
@@ -229,84 +232,109 @@ for (const auto& line1 : lines1) {
 
 std::cerr << "calculating jaccard" << std::endl;
 
-// make an output file
-    std::ofstream output("output.txt");
-    if (!output.is_open()) {
-        std::cerr << "Unable to open output file\n";
-        return 1;
-    }
+// --- keep your includes and existing code ---
 
-    // calculate the Jaccard similarity between the two sets of k-mers in bfs1
-    // against itself
-
-#pragma omp parallel for
-    for (size_t i = 0; i < bfs1.size(); ++i) {
-        for (size_t j = i + 1; j < bfs1.size(); ++j) {
-            // intersect both bfs1 and methylated_bfs1 and then divide the intersection of methylated_bfs1 by the intersection of bfs1
-            int intersection = 0;
-            // no union size needed since we are only interested in the intersection of methylated_bfs1
-            for (size_t k = 0; k < bfSize; ++k) {
-                if (bfs1[i][k] == 1 && bfs1[j][k] == 1) {
-                    ++intersection;
-                }
-            }
-            int methylated_intersection = 0;
-            for (size_t k = 0; k < bfSize; ++k) {
-                if ((bfs1[i][k] == 1 && bfs1[j][k] == 1 && methylated_bfs1[i][k] == methylated_bfs1[j][k] ) ) {
-                    ++methylated_intersection;
-                }
-            }
-            double jaccard = static_cast<double>(methylated_intersection) / intersection;
-#pragma omp critical
-            {
-                // output the Jaccard similarity to the output file using names of the file
-                // file name is in the format of /projects/ABySS_research/grant_prep/R21_single-cell-methylation/data/simulated_genomes/sim_haplotype/GSM5652179_Aorta-Endothel-Z00000422.hg38/11/_aligned_reads.fasta
-                // strip /projects/ABySS_research/grant_prep/R21_single-cell-methylation/data/simulated_genomes/sim_haplotype/ and /_aligned_reads.fasta
-                
-                // identify postition of GSM in string
-                size_t pos = 0;
-                size_t pos2 = 0;
-                size_t pos3 = 0;
-                size_t pos4 = 0;
-                if (dev) {
-                    pos = lines1[i].find("GSM");
-                    // identify the postion of _aligned_reads.fasta
-                    pos2 = lines1[i].find("_aligned_reads.fasta");
-
-                    pos3 = lines1[j].find("GSM");
-                    pos4 = lines1[j].find("_aligned_reads.fasta");
-                }
-                else {
-                    // get the base name of the full path
-                    pos = lines1[i].find_last_of("/");
-                    pos3 = lines1[j].find_last_of("/");
-                    // find fastq or fq in the name and use that as anchor pos
-                    pos2 = lines1[i].find_first_of(".fq");
-                    pos4 = lines1[j].find_first_of(".fq");
-                    if (pos2 == std::string::npos) {
-                        pos2 = lines1[i].find_first_of(".fastq");
-                    }
-                    if (pos4 == std::string::npos) {
-                        pos4 = lines1[j].find_first_of(".fastq");
-                    }
+// After you finish filling bfs1 and methylated_bfs1 vectors and bfSize is set:
 
 
-                }
+std::ofstream output_hamming(prefix + "hamming.tsv");
+std::ofstream output_cosine(prefix + "cosine.tsv");
+std::ofstream output_pearson(prefix + "pearson.tsv");
 
+if (!output_hamming.is_open() || !output_cosine.is_open() || !output_pearson.is_open()) {
+    std::cerr << "Unable to open output file(s)\n";
+    return 1;
+}
 
-                    std::string name1 = lines1[i].substr(pos, pos2 - pos);
-                    std::string name2 = lines1[j].substr(pos3, pos4 - pos3 );
-                output << name1 << "\t" << name2 << "\t" << jaccard << std::endl;
+#pragma omp parallel for schedule(dynamic)
+for (size_t i = 0; i < bfs1.size(); ++i) {
+    for (size_t j = i + 1; j < bfs1.size(); ++j) {
+        int intersection = 0;
+        int methylated_intersection = 0;
+        double dot = 0.0;
+        double sumAi2_cos = 0.0, sumAj2_cos = 0.0;
+        double sumAiAj = 0.0, sumAi2 = 0.0, sumAj2 = 0.0;
+        double shared_sites = 0;
+        double sumA = 0.0, sumB = 0.0;
+
+        for (size_t k = 0; k < bfSize; ++k) {
+            if (bfs1[i][k] == 1 && bfs1[j][k] == 1) {
+                ++intersection;
+                uint8_t A = methylated_bfs1[i][k];
+                uint8_t B = methylated_bfs1[j][k];
+
+                if (A == B) ++methylated_intersection;
+
+                // For Cosine
+                dot += A * B;
+                sumAi2_cos += A * A;
+                sumAj2_cos += B * B;
+
+                // For Pearson
+                sumA += A;
+                sumB += B;
+                ++shared_sites;
             }
         }
+
+        double cosine_sim = (sumAi2_cos > 0 && sumAj2_cos > 0) ? dot / (sqrt(sumAi2_cos) * sqrt(sumAj2_cos)) : 0.0;
+        double pearson_sim = 0.0;
+        double jaccard = intersection > 0 ? static_cast<double>(methylated_intersection) / intersection : 0.0;
+
+        if (shared_sites > 0) {
+            double meanA = sumA / shared_sites;
+            double meanB = sumB / shared_sites;
+
+            for (size_t k = 0; k < bfSize; ++k) {
+                if (bfs1[i][k] == 1 && bfs1[j][k] == 1) {
+                    double A = methylated_bfs1[i][k];
+                    double B = methylated_bfs1[j][k];
+                    double dA = A - meanA;
+                    double dB = B - meanB;
+                    sumAiAj += dA * dB;
+                    sumAi2 += dA * dA;
+                    sumAj2 += dB * dB;
+                }
+            }
+
+            pearson_sim = (sumAi2 > 0 && sumAj2 > 0) ? sumAiAj / (sqrt(sumAi2) * sqrt(sumAj2)) : 0.0;
+        }
+
+        size_t pos = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+        if (dev) {
+            pos = lines1[i].find("GSM");
+            pos2 = lines1[i].find("_aligned_reads.fasta");
+            pos3 = lines1[j].find("GSM");
+            pos4 = lines1[j].find("_aligned_reads.fasta");
+        } else {
+            pos = lines1[i].find_last_of("/");
+            pos3 = lines1[j].find_last_of("/");
+            pos2 = lines1[i].find_first_of(".fq");
+            pos4 = lines1[j].find_first_of(".fq");
+            if (pos2 == std::string::npos) pos2 = lines1[i].find_first_of(".fastq");
+            if (pos4 == std::string::npos) pos4 = lines1[j].find_first_of(".fastq");
+        }
+
+        std::string name1 = lines1[i].substr(pos, pos2 - pos);
+        std::string name2 = lines1[j].substr(pos3, pos4 - pos3);
+
+        #pragma omp critical
+        {
+            output_hamming << name1 << "\t" << name2 << "\t" << jaccard << "\n";
+            output_cosine << name1 << "\t" << name2 << "\t" << cosine_sim << "\n";
+            output_pearson << name1 << "\t" << name2 << "\t" << pearson_sim << "\n";
+        }
     }
-    
+}
+
+
+output_hamming.close();
+output_cosine.close();
+output_pearson.close();
 
 
 
 
-
-    
 
     return 0;
 }
