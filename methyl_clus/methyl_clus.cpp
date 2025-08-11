@@ -35,7 +35,13 @@ std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(const std::stri
                 std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
                 // upper case the kmer
                 std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-                std::vector<uint64_t> hashes = {CityHash64(kmer.c_str(), k)};
+                std::string reverse_kmer = btllib::get_reverse_complement(kmer);
+
+                uint64_t hash_fwd = CityHash64(kmer.c_str(), k);
+                uint64_t hash_rev = CityHash64(reverse_kmer.c_str(), k);
+
+                // Pick smaller (canonical form)
+                std::vector<uint64_t> hashes = {std::min(hash_fwd, hash_rev)};
                 if (!methylated_kmers_in_dataset.contains(hashes)) {
                     continue;
                 }
@@ -45,7 +51,14 @@ std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(const std::stri
             std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
             // upper case the kmer
             std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-            all_kmers_hash.push_back(std::make_pair(CityHash64(kmer.c_str(), k), is_methylated));            
+            std::string reverse_kmer = btllib::get_reverse_complement(kmer);
+
+            uint64_t hash_fwd = CityHash64(kmer.c_str(), k);
+            uint64_t hash_rev = CityHash64(reverse_kmer.c_str(), k);
+
+            // Pick smaller (canonical form)
+            uint64_t canonical_hash = std::min(hash_fwd, hash_rev);
+            all_kmers_hash.push_back(std::make_pair(canonical_hash, is_methylated));            
         }
     }
     return all_kmers_hash;
@@ -130,7 +143,7 @@ omp_set_num_threads(numThreads);
     std::vector<std::vector<uint8_t>> bfs1;
     std::vector<std::vector<uint8_t>> methylated_bfs1;
     // const variable 60 mil for bf
-    //const size_t bfSize = 3000000000;
+    //const size_t bfSize = 30000000000;
     // calculate size needed for a false positive rate of 0.1
     //const int bfSize = -1 * num_elements / log(0.1);
 
@@ -158,7 +171,13 @@ btllib::SeqReader reader(line1, btllib::SeqReader::Flag::SHORT_MODE);
                 std::string kmer = record.seq.substr(j, k);
                 std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
                 std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-                std::vector<uint64_t> hashes = {CityHash64(kmer.c_str(), k)};
+                std::string reverse_kmer = btllib::get_reverse_complement(kmer);
+
+                uint64_t hash_fwd = CityHash64(kmer.c_str(), k);
+                uint64_t hash_rev = CityHash64(reverse_kmer.c_str(), k);
+
+                // Pick smaller (canonical form)
+                std::vector<uint64_t> hashes = {std::min(hash_fwd, hash_rev)};
                 methylated_kmers_in_dataset.insert(hashes);
             }
         }
