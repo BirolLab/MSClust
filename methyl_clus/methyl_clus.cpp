@@ -290,14 +290,11 @@ std::cerr << "trip bf size: " << trip_bfSize << std::endl;
 
 
 
-std::vector<std::vector<uint8_t>> bfs1;
-std::vector<std::vector<uint8_t>> methylated_bfs1;
+std::vector<std::unique_ptr<btllib::BloomFilter>> bfs1;
+std::vector<std::unique_ptr<btllib::BloomFilter>> methylated_bfs1;
 
-
-std::vector<std::vector<uint8_t>> trip_bfs1;
-std::vector<std::vector<std::vector<uint8_t>>> trip_methylated_bfs1;
-
-
+std::vector<std::unique_ptr<btllib::BloomFilter>> trip_bfs1;
+std::vector<std::unique_ptr<btllib::BloomFilter>> trip_methylated_bfs1;
 std::cerr << "making bloom filter" << std::endl;
 int num_lines = 0;
 
@@ -316,12 +313,20 @@ for (const auto& line1 : lines1) {
         throw;
     }
 
-    std::vector<uint8_t> final_bf(bfSize, 0);
-    std::vector<uint8_t> final_meth_bf(bfSize, 0);
-    std::vector<uint8_t> final_trip_bf(trip_bfSize, 0);
-    std::vector<std::vector<uint8_t>> final_trip_meth_bf(
-        trip_bfSize, std::vector<uint8_t>(8, 0)
-    );
+    bfs1.emplace_back(std::make_unique<btllib::BloomFilter>((bfSize / 8) + 1, 1));
+    methylated_bfs1.emplace_back(std::make_unique<btllib::BloomFilter>((bfSize / 8) + 1, 1));
+    trip_bfs1.emplace_back(std::make_unique<btllib::BloomFilter>((trip_bfSize / 8) + 1, 1));
+
+    // Trip methylated BF: vector of unique_ptr<BloomFilter>
+    trip_methylated_bfs1.emplace_back(
+    std::make_unique<btllib::BloomFilter>(trip_bfSize * 8, 1)
+);
+
+    auto& final_bf           = *bfs1.back();
+    auto& final_meth_bf      = *methylated_bfs1.back();
+    auto& final_trip_bf      = *trip_bfs1.back();
+    auto& final_trip_meth_bf = *trip_methylated_bfs1.back();
+
 
     if (debug) std::cerr << "[DEBUG] Starting OpenMP parallel loop" << std::endl;
     #pragma omp parallel for
@@ -337,9 +342,9 @@ for (const auto& line1 : lines1) {
 
         for (const auto& kmer : all_kmers) {
             size_t idx = hash_to_loc_map[kmer.first % (3000000000ULL * 8)];
-            final_bf[idx] = 1;
+            final_bf.insert({idx});
             if (kmer.second) {
-                final_meth_bf[idx] = 1;
+                final_meth_bf.insert({idx});
             }
         }
         if (debug) std::cerr << "[DEBUG] Finished regular hash" << std::endl;
@@ -363,23 +368,21 @@ for (const auto& line1 : lines1) {
                     std::cerr << "Combined hash found" << std::endl;
                 }
             }
-            final_trip_bf[idx] = 1;
+            final_trip_bf.insert({idx});
 
             uint8_t pattern = (all_kmers[j].second   ? 4 : 0) |
                               (all_kmers[j + 1].second ? 2 : 0) |
                               (all_kmers[j + 2].second ? 1 : 0);
 
-            final_trip_meth_bf[idx][pattern] = 1;
+            final_trip_meth_bf.insert({idx * 8 + pattern});
+            if (debug) {
+                std::cerr << "Insert to offset = " << (idx * 8 + pattern) << std::endl;
+            }
             if (debug) std::cerr << "[DEBUG] Finished triple hash" << std::endl;
         }
     }
     if (debug) std::cerr << "[DEBUG] Finished processing line" << std::endl;
 
-    bfs1.emplace_back(std::move(final_bf));
-    methylated_bfs1.emplace_back(std::move(final_meth_bf));
-    trip_bfs1.emplace_back(std::move(final_trip_bf));
-    trip_methylated_bfs1.emplace_back(std::move(final_trip_meth_bf));
-    if (debug) std::cerr << "[DEBUG] Data pushed to BFS vectors" << std::endl;
 }
 
 
@@ -431,10 +434,10 @@ for (size_t i = 0; i < bfs1.size(); ++i) {
         double sumA = 0.0, sumB = 0.0;
 
         for (size_t k = 0; k < bfSize; ++k) {
-            if (bfs1[i][k] == 1 && bfs1[j][k] == 1) {
+            if (bfs1[i]->contains({k}) && bfs1[j]->contains({k})) {
                 ++intersection;
-                uint8_t A = methylated_bfs1[i][k];
-                uint8_t B = methylated_bfs1[j][k];
+                bool A = methylated_bfs1[i]->contains({k});
+                bool B = methylated_bfs1[j]->contains({k});
 
                 if (A == B) ++methylated_intersection;
 
@@ -459,9 +462,20 @@ for (size_t i = 0; i < bfs1.size(); ++i) {
             double meanB = sumB / shared_sites;
 
             for (size_t k = 0; k < bfSize; ++k) {
-                if (bfs1[i][k] == 1 && bfs1[j][k] == 1) {
-                    double A = methylated_bfs1[i][k];
-                    double B = methylated_bfs1[j][k];
+                if (bfs1[i]->contains({k}) && bfs1[j]->contains({k})) {
+                    bool A_bool = methylated_bfs1[i]->contains({k});
+                    bool B_bool = methylated_bfs1[j]->contains({k});
+                    double A, B;
+                    if (A_bool) {
+                        A = 1.0;
+                    } else {
+                        A = 0.0;
+                    }
+                    if (B_bool) {
+                        B = 1.0;
+                    } else {
+                        B = 0.0;
+                    }
                     double dA = A - meanA;
                     double dB = B - meanB;
                     sumAiAj += dA * dB;
@@ -531,22 +545,25 @@ for (size_t i = 0; i < trip_bfs1.size(); ++i) {
         double sumA = 0.0, sumB = 0.0;
 
         for (size_t k = 0; k < trip_bfSize; ++k) {
-            if (trip_bfs1[i][k] == 1 && trip_bfs1[j][k] == 1) {
+            if (trip_bfs1[i]->contains({k}) && trip_bfs1[j]->contains({k})) {
                 ++intersection;
 
-                // Compare across all 8 methylation patterns
                 int match_count = 0;
-                for (int p = 0; p < 8; ++p) {
-                    uint8_t A = trip_methylated_bfs1[i][k][p];
-                    uint8_t B = trip_methylated_bfs1[j][k][p];
+                for (uint64_t p = 0; p < 8; ++p) {
+                    bool A_bool = trip_methylated_bfs1[i]->contains({k * 8 + p});
+                    bool B_bool = trip_methylated_bfs1[j]->contains({k * 8 + p});
+
+                    double A = A_bool ? 1.0 : 0.0;
+                    double B = B_bool ? 1.0 : 0.0;
+
                     if (A == B) ++match_count;
 
-                    // Cosine
+                    // Cosine similarity
                     dot += A * B;
                     sumAi2_cos += A * A;
                     sumAj2_cos += B * B;
 
-                    // Pearson sums
+                    // Pearson components
                     sumA += A;
                     sumB += B;
                     ++shared_sites;
@@ -556,21 +573,31 @@ for (size_t i = 0; i < trip_bfs1.size(); ++i) {
             }
         }
 
-        double cosine_sim = (sumAi2_cos > 0 && sumAj2_cos > 0) ? dot / (sqrt(sumAi2_cos) * sqrt(sumAj2_cos)) : 0.0;
+        double cosine_sim = (sumAi2_cos > 0 && sumAj2_cos > 0)
+                            ? dot / (sqrt(sumAi2_cos) * sqrt(sumAj2_cos))
+                            : 0.0;
+
         double pearson_sim = 0.0;
-        double jaccard = intersection > 0 ? static_cast<double>(methylated_intersection) / (intersection * 8) : 0.0;
+        double jaccard = intersection > 0
+                         ? static_cast<double>(methylated_intersection) / (intersection * 8)
+                         : 0.0;
 
         if (shared_sites > 0) {
             double meanA = sumA / shared_sites;
             double meanB = sumB / shared_sites;
 
             for (size_t k = 0; k < trip_bfSize; ++k) {
-                if (trip_bfs1[i][k] == 1 && trip_bfs1[j][k] == 1) {
-                    for (int p = 0; p < 8; ++p) {
-                        double A = trip_methylated_bfs1[i][k][p];
-                        double B = trip_methylated_bfs1[j][k][p];
+                if (trip_bfs1[i]->contains({k}) && trip_bfs1[j]->contains({k})) {
+                    for (uint64_t p = 0; p < 8; ++p) {
+                        bool A_bool = trip_methylated_bfs1[i]->contains({k * 8 + p});
+                        bool B_bool = trip_methylated_bfs1[j]->contains({k * 8 + p});
+
+                        double A = A_bool ? 1.0 : 0.0;
+                        double B = B_bool ? 1.0 : 0.0;
+
                         double dA = A - meanA;
                         double dB = B - meanB;
+
                         sumAiAj += dA * dB;
                         sumAi2 += dA * dA;
                         sumAj2 += dB * dB;
@@ -578,7 +605,9 @@ for (size_t i = 0; i < trip_bfs1.size(); ++i) {
                 }
             }
 
-            pearson_sim = (sumAi2 > 0 && sumAj2 > 0) ? sumAiAj / (sqrt(sumAi2) * sqrt(sumAj2)) : 0.0;
+            pearson_sim = (sumAi2 > 0 && sumAj2 > 0)
+                          ? sumAiAj / (sqrt(sumAi2) * sqrt(sumAj2))
+                          : 0.0;
         }
 
         size_t pos = 0, pos2 = 0, pos3 = 0, pos4 = 0;
@@ -590,10 +619,10 @@ for (size_t i = 0; i < trip_bfs1.size(); ++i) {
         } else {
             pos = lines1[i].find_last_of("/");
             pos3 = lines1[j].find_last_of("/");
-            pos2 = lines1[i].find_first_of(".fq");
-            pos4 = lines1[j].find_first_of(".fq");
-            if (pos2 == std::string::npos) pos2 = lines1[i].find_first_of(".fastq");
-            if (pos4 == std::string::npos) pos4 = lines1[j].find_first_of(".fastq");
+            pos2 = lines1[i].find(".fq");
+            pos4 = lines1[j].find(".fq");
+            if (pos2 == std::string::npos) pos2 = lines1[i].find(".fastq");
+            if (pos4 == std::string::npos) pos4 = lines1[j].find(".fastq");
         }
 
         std::string name1 = lines1[i].substr(pos, pos2 - pos);
