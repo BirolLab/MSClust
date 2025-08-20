@@ -290,11 +290,14 @@ std::cerr << "trip bf size: " << trip_bfSize << std::endl;
 
 
 
-std::vector<std::unique_ptr<btllib::BloomFilter>> bfs1;
-std::vector<std::unique_ptr<btllib::BloomFilter>> methylated_bfs1;
+//std::vector<std::unique_ptr<btllib::BloomFilter>> bfs1;
+//std::vector<std::unique_ptr<btllib::BloomFilter>> methylated_bfs1;
+std::vector<std::unique_ptr<btllib::BloomFilter>> interleaved_bfs1;
 
-std::vector<std::unique_ptr<btllib::BloomFilter>> trip_bfs1;
-std::vector<std::unique_ptr<btllib::BloomFilter>> trip_methylated_bfs1;
+
+//std::vector<std::unique_ptr<btllib::BloomFilter>> trip_bfs1;
+//std::vector<std::unique_ptr<btllib::BloomFilter>> trip_methylated_bfs1;
+std::vector<std::unique_ptr<btllib::BloomFilter>> interleaved_trip_bfs1;
 std::cerr << "making bloom filter" << std::endl;
 int num_lines = 0;
 
@@ -313,19 +316,21 @@ for (const auto& line1 : lines1) {
         throw;
     }
 
-    bfs1.emplace_back(std::make_unique<btllib::BloomFilter>((bfSize / 8) + 1, 1));
-    methylated_bfs1.emplace_back(std::make_unique<btllib::BloomFilter>((bfSize / 8) + 1, 1));
-    trip_bfs1.emplace_back(std::make_unique<btllib::BloomFilter>((trip_bfSize / 8) + 1, 1));
+    interleaved_bfs1.emplace_back(std::make_unique<btllib::BloomFilter>(((bfSize / 8) + 1) * 2, 1));
+    interleaved_trip_bfs1.emplace_back(std::make_unique<btllib::BloomFilter>(((trip_bfSize / 8) + 1) * 9, 1));
+
+    /*trip_bfs1.emplace_back(std::make_unique<btllib::BloomFilter>((trip_bfSize / 8) + 1, 1));
 
     // Trip methylated BF: vector of unique_ptr<BloomFilter>
     trip_methylated_bfs1.emplace_back(
     std::make_unique<btllib::BloomFilter>(trip_bfSize * 8, 1)
-);
+);*/
 
-    auto& final_bf           = *bfs1.back();
-    auto& final_meth_bf      = *methylated_bfs1.back();
-    auto& final_trip_bf      = *trip_bfs1.back();
-    auto& final_trip_meth_bf = *trip_methylated_bfs1.back();
+    auto& final_bf           = *interleaved_bfs1.back();
+    auto& final_interleaved_trip_bf = *interleaved_trip_bfs1.back();
+    //auto& final_meth_bf      = *methylated_bfs1.back();
+    /*auto& final_trip_bf      = *trip_bfs1.back();
+    auto& final_trip_meth_bf = *trip_methylated_bfs1.back();*/
 
 
     if (debug) std::cerr << "[DEBUG] Starting OpenMP parallel loop" << std::endl;
@@ -342,9 +347,9 @@ for (const auto& line1 : lines1) {
 
         for (const auto& kmer : all_kmers) {
             size_t idx = hash_to_loc_map[kmer.first % (3000000000ULL * 8)];
-            final_bf.insert({idx});
+            final_bf.insert({idx * 2});
             if (kmer.second) {
-                final_meth_bf.insert({idx});
+                final_bf.insert({idx * 2 + 1});
             }
         }
         if (debug) std::cerr << "[DEBUG] Finished regular hash" << std::endl;
@@ -368,15 +373,16 @@ for (const auto& line1 : lines1) {
                     std::cerr << "Combined hash found" << std::endl;
                 }
             }
-            final_trip_bf.insert({idx});
+            final_interleaved_trip_bf.insert({idx * 9});           // regular presence
+             
 
             uint8_t pattern = (all_kmers[j].second   ? 4 : 0) |
                               (all_kmers[j + 1].second ? 2 : 0) |
                               (all_kmers[j + 2].second ? 1 : 0);
 
-            final_trip_meth_bf.insert({idx * 8 + pattern});
+            final_interleaved_trip_bf.insert({idx * 9 + 1 + pattern});
             if (debug) {
-                std::cerr << "Insert to offset = " << (idx * 8 + pattern) << std::endl;
+                std::cerr << "Insert to offset = " << (idx * 9 + 1 + pattern) << " [trip idx = " << idx << ", pattern = " << static_cast<int>(pattern) << "]" << std::endl;
             }
             if (debug) std::cerr << "[DEBUG] Finished triple hash" << std::endl;
         }
@@ -408,9 +414,6 @@ for (const auto& line1 : lines1) {
 
 std::cerr << "calculating jaccard" << std::endl;
 
-// --- keep your includes and existing code ---
-
-// After you finish filling bfs1 and methylated_bfs1 vectors and bfSize is set:
 
 
 std::ofstream output_hamming(prefix + "hamming.tsv");
@@ -423,8 +426,8 @@ if (!output_hamming.is_open() || !output_cosine.is_open() || !output_pearson.is_
 }
 
 #pragma omp parallel for schedule(dynamic)
-for (size_t i = 0; i < bfs1.size(); ++i) {
-    for (size_t j = i + 1; j < bfs1.size(); ++j) {
+for (size_t i = 0; i < interleaved_bfs1.size(); ++i) {
+    for (size_t j = i + 1; j < interleaved_bfs1.size(); ++j) {
         int intersection = 0;
         int methylated_intersection = 0;
         double dot = 0.0;
@@ -434,48 +437,57 @@ for (size_t i = 0; i < bfs1.size(); ++i) {
         double sumA = 0.0, sumB = 0.0;
 
         for (size_t k = 0; k < bfSize; ++k) {
-            if (bfs1[i]->contains({k}) && bfs1[j]->contains({k})) {
+            size_t regular_idx = k * 2;
+            size_t meth_idx = k * 2 + 1;
+
+            bool A_present = interleaved_bfs1[i]->contains({regular_idx});
+            bool B_present = interleaved_bfs1[j]->contains({regular_idx});
+            if (A_present && B_present) {
                 ++intersection;
-                bool A = methylated_bfs1[i]->contains({k});
-                bool B = methylated_bfs1[j]->contains({k});
 
-                if (A == B) ++methylated_intersection;
+                bool A_meth = interleaved_bfs1[i]->contains({meth_idx});
+                bool B_meth = interleaved_bfs1[j]->contains({meth_idx});
 
-                // For Cosine
-                dot += A * B;
-                sumAi2_cos += A * A;
-                sumAj2_cos += B * B;
+                if (A_meth == B_meth) ++methylated_intersection;
 
-                // For Pearson
-                sumA += A;
-                sumB += B;
+                // Cosine
+                dot += static_cast<double>(A_meth) * static_cast<double>(B_meth);
+                sumAi2_cos += A_meth ? 1.0 : 0.0;
+                sumAj2_cos += B_meth ? 1.0 : 0.0;
+
+                // Pearson sums
+                sumA += static_cast<double>(A_meth);
+                sumB += static_cast<double>(B_meth);
                 ++shared_sites;
             }
         }
 
-        double cosine_sim = (sumAi2_cos > 0 && sumAj2_cos > 0) ? dot / (sqrt(sumAi2_cos) * sqrt(sumAj2_cos)) : 0.0;
+        double cosine_sim = (sumAi2_cos > 0 && sumAj2_cos > 0)
+                            ? dot / (std::sqrt(sumAi2_cos) * std::sqrt(sumAj2_cos))
+                            : 0.0;
+
         double pearson_sim = 0.0;
-        double jaccard = intersection > 0 ? static_cast<double>(methylated_intersection) / intersection : 0.0;
+        double jaccard = intersection > 0
+                         ? static_cast<double>(methylated_intersection) / intersection
+                         : 0.0;
 
         if (shared_sites > 0) {
             double meanA = sumA / shared_sites;
             double meanB = sumB / shared_sites;
 
             for (size_t k = 0; k < bfSize; ++k) {
-                if (bfs1[i]->contains({k}) && bfs1[j]->contains({k})) {
-                    bool A_bool = methylated_bfs1[i]->contains({k});
-                    bool B_bool = methylated_bfs1[j]->contains({k});
-                    double A, B;
-                    if (A_bool) {
-                        A = 1.0;
-                    } else {
-                        A = 0.0;
-                    }
-                    if (B_bool) {
-                        B = 1.0;
-                    } else {
-                        B = 0.0;
-                    }
+                size_t regular_idx = k * 2;
+                size_t meth_idx = k * 2 + 1;
+
+                bool A_present = interleaved_bfs1[i]->contains({regular_idx});
+                bool B_present = interleaved_bfs1[j]->contains({regular_idx});
+                if (A_present && B_present) {
+                    bool A_meth = interleaved_bfs1[i]->contains({meth_idx});
+                    bool B_meth = interleaved_bfs1[j]->contains({meth_idx});
+
+                    double A = A_meth ? 1.0 : 0.0;
+                    double B = B_meth ? 1.0 : 0.0;
+
                     double dA = A - meanA;
                     double dB = B - meanB;
                     sumAiAj += dA * dB;
@@ -484,9 +496,12 @@ for (size_t i = 0; i < bfs1.size(); ++i) {
                 }
             }
 
-            pearson_sim = (sumAi2 > 0 && sumAj2 > 0) ? sumAiAj / (sqrt(sumAi2) * sqrt(sumAj2)) : 0.0;
+            if (sumAi2 > 0 && sumAj2 > 0) {
+                pearson_sim = sumAiAj / (std::sqrt(sumAi2) * std::sqrt(sumAj2));
+            }
         }
 
+        // Extract sample names
         size_t pos = 0, pos2 = 0, pos3 = 0, pos4 = 0;
         if (dev) {
             pos = lines1[i].find("GSM");
@@ -514,15 +529,13 @@ for (size_t i = 0; i < bfs1.size(); ++i) {
     }
 }
 
-
 output_hamming.close();
 output_cosine.close();
 output_pearson.close();
 
 
-// --- Keep your existing bfs1 / methylated_bfs1 calculation loop above ---
-
 std::cerr << "calculating triple jaccard" << std::endl;
+
 
 std::ofstream output_trip_hamming(prefix + "trip_hamming.tsv");
 std::ofstream output_trip_cosine(prefix + "trip_cosine.tsv");
@@ -534,8 +547,8 @@ if (!output_trip_hamming.is_open() || !output_trip_cosine.is_open() || !output_t
 }
 
 #pragma omp parallel for schedule(dynamic)
-for (size_t i = 0; i < trip_bfs1.size(); ++i) {
-    for (size_t j = i + 1; j < trip_bfs1.size(); ++j) {
+for (size_t i = 0; i < interleaved_trip_bfs1.size(); ++i) {
+    for (size_t j = i + 1; j < interleaved_trip_bfs1.size(); ++j) {
         int intersection = 0;
         int methylated_intersection = 0;
         double dot = 0.0;
@@ -545,25 +558,29 @@ for (size_t i = 0; i < trip_bfs1.size(); ++i) {
         double sumA = 0.0, sumB = 0.0;
 
         for (size_t k = 0; k < trip_bfSize; ++k) {
-            if (trip_bfs1[i]->contains({k}) && trip_bfs1[j]->contains({k})) {
+            size_t presence_idx = k * 9;
+
+            bool A_present = interleaved_trip_bfs1[i]->contains({presence_idx});
+            bool B_present = interleaved_trip_bfs1[j]->contains({presence_idx});
+            if (A_present && B_present) {
                 ++intersection;
 
+                size_t pattern_base = presence_idx + 1; // where patterns start
                 int match_count = 0;
+
                 for (uint64_t p = 0; p < 8; ++p) {
-                    bool A_bool = trip_methylated_bfs1[i]->contains({k * 8 + p});
-                    bool B_bool = trip_methylated_bfs1[j]->contains({k * 8 + p});
+                    bool A_bool = interleaved_trip_bfs1[i]->contains({pattern_base + p});
+                    bool B_bool = interleaved_trip_bfs1[j]->contains({pattern_base + p});
 
                     double A = A_bool ? 1.0 : 0.0;
                     double B = B_bool ? 1.0 : 0.0;
 
                     if (A == B) ++match_count;
 
-                    // Cosine similarity
                     dot += A * B;
                     sumAi2_cos += A * A;
                     sumAj2_cos += B * B;
 
-                    // Pearson components
                     sumA += A;
                     sumB += B;
                     ++shared_sites;
@@ -587,10 +604,16 @@ for (size_t i = 0; i < trip_bfs1.size(); ++i) {
             double meanB = sumB / shared_sites;
 
             for (size_t k = 0; k < trip_bfSize; ++k) {
-                if (trip_bfs1[i]->contains({k}) && trip_bfs1[j]->contains({k})) {
+                size_t presence_idx = k * 9;
+
+                bool A_present = interleaved_trip_bfs1[i]->contains({presence_idx});
+                bool B_present = interleaved_trip_bfs1[j]->contains({presence_idx});
+                if (A_present && B_present) {
+                    size_t pattern_base = presence_idx + 1;
+
                     for (uint64_t p = 0; p < 8; ++p) {
-                        bool A_bool = trip_methylated_bfs1[i]->contains({k * 8 + p});
-                        bool B_bool = trip_methylated_bfs1[j]->contains({k * 8 + p});
+                        bool A_bool = interleaved_trip_bfs1[i]->contains({pattern_base + p});
+                        bool B_bool = interleaved_trip_bfs1[j]->contains({pattern_base + p});
 
                         double A = A_bool ? 1.0 : 0.0;
                         double B = B_bool ? 1.0 : 0.0;
@@ -605,11 +628,12 @@ for (size_t i = 0; i < trip_bfs1.size(); ++i) {
                 }
             }
 
-            pearson_sim = (sumAi2 > 0 && sumAj2 > 0)
-                          ? sumAiAj / (sqrt(sumAi2) * sqrt(sumAj2))
-                          : 0.0;
+            if (sumAi2 > 0 && sumAj2 > 0) {
+                pearson_sim = sumAiAj / (sqrt(sumAi2) * sqrt(sumAj2));
+            }
         }
 
+        // Name extraction
         size_t pos = 0, pos2 = 0, pos3 = 0, pos4 = 0;
         if (dev) {
             pos = lines1[i].find("GSM");
@@ -640,6 +664,7 @@ for (size_t i = 0; i < trip_bfs1.size(); ++i) {
 output_trip_hamming.close();
 output_trip_cosine.close();
 output_trip_pearson.close();
+
 
 
 
