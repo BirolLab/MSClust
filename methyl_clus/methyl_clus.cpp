@@ -169,9 +169,18 @@ omp_set_num_threads(numThreads);
 
 std::cerr << "making methylated kmers dataset" << std::endl;
 
+std::unordered_map<uint64_t, size_t> hash_to_loc_map;
+std::atomic<size_t> bfSize(0);
+std::unordered_map<uint64_t, size_t> trip_hash_to_loc_map;
+std::atomic<size_t> trip_bfSize(0);
+
+std::cerr << "bf size: " << bfSize << std::endl;
+std::cerr << "trip bf size: " << trip_bfSize << std::endl;
+
 //std::unordered_set<uint64_t> methylated_kmers_in_dataset;
-btllib::BloomFilter methylated_kmers_in_dataset(3000000000, 1);
-btllib::BloomFilter triple_methylated_kmers_in_dataset(3000000000, 1);
+btllib::BloomFilter methylated_kmers_in_dataset(30000000000ULL, 1);
+btllib::BloomFilter triple_methylated_kmers_in_dataset(30000000000ULL, 1);
+
 
 
 
@@ -257,11 +266,9 @@ btllib::SeqReader reader(line1, btllib::SeqReader::Flag::SHORT_MODE);
 }
 
 
-std::unordered_map<uint64_t, size_t> hash_to_loc_map;
-std::atomic<size_t> bfSize(0);
 
 #pragma omp parallel for schedule(static)
-for (uint64_t i = 0; i < 3000000000ULL * 8; ++i) {
+for (uint64_t i = 0; i < 30000000000ULL * 8; ++i) {
     if (methylated_kmers_in_dataset.contains({i})) {  // Bloom filter says 'possibly present'
         size_t index = bfSize.fetch_add(1, std::memory_order_relaxed);  // unique dense index
         #pragma omp critical
@@ -271,11 +278,9 @@ for (uint64_t i = 0; i < 3000000000ULL * 8; ++i) {
     }
 }
 
-std::unordered_map<uint64_t, size_t> trip_hash_to_loc_map;
-std::atomic<size_t> trip_bfSize(0);
 
 #pragma omp parallel for schedule(static)
-for (uint64_t i = 0; i < 3000000000ULL * 8; ++i) {
+for (uint64_t i = 0; i < 30000000000ULL * 8; ++i) {
     if (triple_methylated_kmers_in_dataset.contains({i})) {  // Bloom filter says 'possibly present'
         size_t index = trip_bfSize.fetch_add(1, std::memory_order_relaxed);  // unique dense index
         #pragma omp critical
@@ -285,17 +290,15 @@ for (uint64_t i = 0; i < 3000000000ULL * 8; ++i) {
     }
 }
 
-std::cerr << "bf size: " << bfSize << std::endl;
-std::cerr << "trip bf size: " << trip_bfSize << std::endl;
 
 
 
-std::vector<std::vector<uint8_t>> bfs1;
-std::vector<std::vector<uint8_t>> methylated_bfs1;
-
+/*std::vector<std::vector<uint8_t>> bfs1;
+std::vector<std::vector<uint8_t>> methylated_bfs1;*/
+std::vector<std::vector<uint8_t>> consolidated_single_bfs1;
 
 std::vector<std::vector<uint8_t>> trip_bfs1;
-std::vector<std::vector<std::vector<uint8_t>>> trip_methylated_bfs1;
+std::vector<std::vector<uint8_t>> trip_methylated_bfs1;
 
 
 std::cerr << "making bloom filter" << std::endl;
@@ -304,7 +307,7 @@ int num_lines = 0;
 for (const auto& line1 : lines1) {
     std::cerr << "[DEBUG] Reading line " << num_lines++ << std::endl;
 
-    std::vector<btllib::SeqReader::Record> records;
+    /*std::vector<btllib::SeqReader::Record> records;
     try {
         if (debug) std::cerr << "[DEBUG] Opening SeqReader for: " << line1 << std::endl;
         for (const auto& record : btllib::SeqReader(line1, btllib::SeqReader::Flag::SHORT_MODE | btllib::SeqReader::Flag::FOLD_CASE)) {
@@ -314,32 +317,36 @@ for (const auto& line1 : lines1) {
     } catch (const std::exception& e) {
         std::cerr << "[ERROR] SeqReader failed: " << e.what() << std::endl;
         throw;
-    }
+    }*/
 
-    std::vector<uint8_t> final_bf(bfSize, 0);
-    std::vector<uint8_t> final_meth_bf(bfSize, 0);
+    /*std::vector<uint8_t> final_bf(bfSize, 0);
+    std::vector<uint8_t> final_meth_bf(bfSize, 0);*/
+    std::vector<uint8_t> final_consolidated_bf(bfSize * 2, 0);
     std::vector<uint8_t> final_trip_bf(trip_bfSize, 0);
-    std::vector<std::vector<uint8_t>> final_trip_meth_bf(
-        trip_bfSize, std::vector<uint8_t>(8, 0)
+    std::vector<uint8_t> final_trip_meth_bf(
+        trip_bfSize * 8, 0 
     );
 
     if (debug) std::cerr << "[DEBUG] Starting OpenMP parallel loop" << std::endl;
-    #pragma omp parallel for
-    for (size_t i = 0; i < records.size(); ++i) {
-        auto& record = records[i];
+btllib::SeqReader reader(line1, btllib::SeqReader::Flag::SHORT_MODE);
+//two pass
 
-        if (debug && i % 1000 == 0) {
-            std::cerr << "[DEBUG] Processing record " << i << " of " << records.size() << std::endl;
-        }
+#pragma omp parallel
+    for (const auto record : reader) {
+
 
         std::vector<std::pair<uint64_t, bool>> all_kmers =
             get_all_methylation_kmers(record.seq, k, methylated_kmers_in_dataset, dev);
 
         for (const auto& kmer : all_kmers) {
-            size_t idx = hash_to_loc_map[kmer.first % (3000000000ULL * 8)];
-            final_bf[idx] = 1;
+            size_t idx = hash_to_loc_map[kmer.first % (30000000000ULL * 8)];
+            /*final_bf[idx] = 1;
             if (kmer.second) {
                 final_meth_bf[idx] = 1;
+            }*/
+            final_consolidated_bf[idx * 2] = 1;
+            if (kmer.second) {
+                final_consolidated_bf[idx * 2 + 1] = 1;
             }
         }
         if (debug) std::cerr << "[DEBUG] Finished regular hash" << std::endl;
@@ -351,13 +358,13 @@ for (const auto& line1 : lines1) {
                 all_kmers[j + 2].first
             );
 
-            size_t idx = trip_hash_to_loc_map[combined_hash % (3000000000ULL * 8)];
+            size_t idx = trip_hash_to_loc_map[combined_hash % (30000000000ULL * 8)];
             if (debug) {
                 std::cerr << "combined_hash : " << combined_hash << std::endl;
-                std::cerr << "combined_hash mod : " << combined_hash % (3000000000ULL * 8) << std::endl;
+                std::cerr << "combined_hash mod : " << combined_hash % (30000000000ULL * 8) << std::endl;
                 std::cerr << "idx : " << idx << std::endl;
                 std::cerr << "final_trip_bf size : " << trip_bfSize << std::endl;
-                if (trip_hash_to_loc_map.count(combined_hash % (3000000000ULL * 8)) == 0) {
+                if (trip_hash_to_loc_map.count(combined_hash % (30000000000ULL * 8)) == 0) {
                     std::cerr << "Combined hash not found" << std::endl;
                 } else {
                     std::cerr << "Combined hash found" << std::endl;
@@ -369,14 +376,15 @@ for (const auto& line1 : lines1) {
                               (all_kmers[j + 1].second ? 2 : 0) |
                               (all_kmers[j + 2].second ? 1 : 0);
 
-            final_trip_meth_bf[idx][pattern] = 1;
+            final_trip_meth_bf[idx * 8 + pattern] = 1;
             if (debug) std::cerr << "[DEBUG] Finished triple hash" << std::endl;
         }
     }
     if (debug) std::cerr << "[DEBUG] Finished processing line" << std::endl;
 
-    bfs1.emplace_back(std::move(final_bf));
-    methylated_bfs1.emplace_back(std::move(final_meth_bf));
+    /*bfs1.emplace_back(std::move(final_bf));
+    methylated_bfs1.emplace_back(std::move(final_meth_bf));*/
+    consolidated_single_bfs1.emplace_back(std::move(final_consolidated_bf));
     trip_bfs1.emplace_back(std::move(final_trip_bf));
     trip_methylated_bfs1.emplace_back(std::move(final_trip_meth_bf));
     if (debug) std::cerr << "[DEBUG] Data pushed to BFS vectors" << std::endl;
@@ -420,8 +428,8 @@ if (!output_hamming.is_open() || !output_cosine.is_open() || !output_pearson.is_
 }
 
 #pragma omp parallel for schedule(dynamic)
-for (size_t i = 0; i < bfs1.size(); ++i) {
-    for (size_t j = i + 1; j < bfs1.size(); ++j) {
+for (size_t i = 0; i < consolidated_single_bfs1.size(); ++i) {
+    for (size_t j = i + 1; j < consolidated_single_bfs1.size(); ++j) {
         int intersection = 0;
         int methylated_intersection = 0;
         double dot = 0.0;
@@ -431,10 +439,10 @@ for (size_t i = 0; i < bfs1.size(); ++i) {
         double sumA = 0.0, sumB = 0.0;
 
         for (size_t k = 0; k < bfSize; ++k) {
-            if (bfs1[i][k] == 1 && bfs1[j][k] == 1) {
+            if (consolidated_single_bfs1[i][k*2] == 1 && consolidated_single_bfs1[j][k*2] == 1) {
                 ++intersection;
-                uint8_t A = methylated_bfs1[i][k];
-                uint8_t B = methylated_bfs1[j][k];
+                uint8_t A = consolidated_single_bfs1[i][k * 2 + 1];
+                uint8_t B = consolidated_single_bfs1[j][k * 2 + 1];
 
                 if (A == B) ++methylated_intersection;
 
@@ -459,9 +467,9 @@ for (size_t i = 0; i < bfs1.size(); ++i) {
             double meanB = sumB / shared_sites;
 
             for (size_t k = 0; k < bfSize; ++k) {
-                if (bfs1[i][k] == 1 && bfs1[j][k] == 1) {
-                    double A = methylated_bfs1[i][k];
-                    double B = methylated_bfs1[j][k];
+                if (consolidated_single_bfs1[i][k * 2] == 1 &&consolidated_single_bfs1[j][k * 2] == 1) {
+                    double A = consolidated_single_bfs1[i][k * 2 + 1];
+                    double B = consolidated_single_bfs1[j][k * 2 + 1];
                     double dA = A - meanA;
                     double dB = B - meanB;
                     sumAiAj += dA * dB;
@@ -537,8 +545,8 @@ for (size_t i = 0; i < trip_bfs1.size(); ++i) {
                 // Compare across all 8 methylation patterns
                 int match_count = 0;
                 for (int p = 0; p < 8; ++p) {
-                    uint8_t A = trip_methylated_bfs1[i][k][p];
-                    uint8_t B = trip_methylated_bfs1[j][k][p];
+                    uint8_t A = trip_methylated_bfs1[i][k * 8 +p];
+                    uint8_t B = trip_methylated_bfs1[j][k * 8 +p];
                     if (A == B) ++match_count;
 
                     // Cosine
@@ -567,8 +575,8 @@ for (size_t i = 0; i < trip_bfs1.size(); ++i) {
             for (size_t k = 0; k < trip_bfSize; ++k) {
                 if (trip_bfs1[i][k] == 1 && trip_bfs1[j][k] == 1) {
                     for (int p = 0; p < 8; ++p) {
-                        double A = trip_methylated_bfs1[i][k][p];
-                        double B = trip_methylated_bfs1[j][k][p];
+                        double A = trip_methylated_bfs1[i][k * 8 + p];
+                        double B = trip_methylated_bfs1[j][k * 8 + p];
                         double dA = A - meanA;
                         double dB = B - meanB;
                         sumAiAj += dA * dB;
