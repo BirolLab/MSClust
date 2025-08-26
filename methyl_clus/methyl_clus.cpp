@@ -14,6 +14,7 @@
 #include <argparse/argparse.hpp>
 
 #include "btllib/bloom_filter.hpp"
+#include "btllib/nthash.hpp"
 #include <btllib/seq.hpp>
 #include <btllib/seq_reader.hpp>
 
@@ -35,6 +36,8 @@ uint64_t combine_triple(uint64_t h1, uint64_t h2, uint64_t h3) {
 }
 
 std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(const std::string& seq, unsigned k, btllib::BloomFilter& methylated_kmers_in_dataset, bool dev) {
+    btllib::NtHash itr(seq, 1, k);
+    itr.roll();
     std::vector<std::pair<uint64_t, bool>> all_kmers_hash;
     for (size_t i = 0; i < seq.size() - k + 1; ++i) {
         bool is_methylated = false;
@@ -45,36 +48,21 @@ std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(const std::stri
                 is_methylated = true;
             } else {
                 // check if the kmer is in the dataset
-                std::string kmer = seq.substr(i, k);
-                // covert all 1 to C
-                std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
-                // upper case the kmer
-                std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-                std::string reverse_kmer = btllib::get_reverse_complement(kmer);
-
-                uint64_t hash_fwd = CityHash64(kmer.c_str(), k);
-                uint64_t hash_rev = CityHash64(reverse_kmer.c_str(), k);
+                //itr.sub({k/2 - 1}, {'T'});
 
                 // Pick smaller (canonical form)
-                std::vector<uint64_t> hashes = {std::min(hash_fwd, hash_rev)};
-                if (!methylated_kmers_in_dataset.contains(hashes)) {
+                if (!methylated_kmers_in_dataset.contains(itr.hashes())) {
+                    itr.roll();
                     continue;
                 }
             }
-            std::string kmer = seq.substr(i, k);
-            // covert all 1 to T
-            std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
-            // upper case the kmer
-            std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-            std::string reverse_kmer = btllib::get_reverse_complement(kmer);
-
-            uint64_t hash_fwd = CityHash64(kmer.c_str(), k);
-            uint64_t hash_rev = CityHash64(reverse_kmer.c_str(), k);
-
-            // Pick smaller (canonical form)
-            uint64_t canonical_hash = std::min(hash_fwd, hash_rev);
-            all_kmers_hash.push_back(std::make_pair(canonical_hash, is_methylated));            
+            itr.sub({k/2 - 1}, {'T'});
+            all_kmers_hash.push_back(std::make_pair(itr.hashes()[0], is_methylated));
+            if (is_methylated) {
+                itr.sub({k/2 - 1}, {'C'}); 
+            }           
         }
+        itr.roll();
     }
     return all_kmers_hash;
 }
@@ -195,24 +183,19 @@ btllib::SeqReader reader(line1, btllib::SeqReader::Flag::SHORT_MODE);
 
 #pragma omp parallel
     for (const auto record : reader) {
-        std::vector<uint64_t> list_of_meth_states;
+        btllib::NtHash itr(record.seq, 1, k);
+        itr.roll();
+        //std::vector<uint64_t> list_of_meth_states;
         for (size_t j = 0; j + k <= record.seq.size(); ++j) {
             
             char meth_base = dev ? '1' : 'C';
             if (record.seq[j + k / 2] == meth_base && record.seq[j + k / 2 + 1] == 'G') {
-                std::string kmer = record.seq.substr(j, k);
-                std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
-                std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-                std::string reverse_kmer = btllib::get_reverse_complement(kmer);
-
-                uint64_t hash_fwd = CityHash64(kmer.c_str(), k);
-                uint64_t hash_rev = CityHash64(reverse_kmer.c_str(), k);
-
-                // Pick smaller (canonical form)
-                std::vector<uint64_t> hashes = {std::min(hash_fwd, hash_rev)};
-                list_of_meth_states.emplace_back(hashes[0]);
-                methylated_kmers_in_dataset.insert(hashes);
+                itr.sub({k/2 - 1}, {'T'});
+                //list_of_meth_states.emplace_back(hashes[0]);
+                methylated_kmers_in_dataset.insert(itr.hashes());
+                itr.sub({k/2 - 1}, {'C'});
             }
+            itr.roll();
             // insert into triple
 
         }
@@ -231,26 +214,27 @@ btllib::SeqReader reader(line1, btllib::SeqReader::Flag::SHORT_MODE);
 
 #pragma omp parallel
     for (const auto record : reader) {
+        btllib::NtHash itr(record.seq, 1, k);
+        itr.roll();
+
         std::vector<uint64_t> list_of_meth_states;
         for (size_t j = 0; j + k <= record.seq.size(); ++j) {
             
             char meth_base = dev ? '1' : 'C';
             if ((record.seq[j + k / 2] == meth_base || record.seq[j + k / 2] == 'T' )&& record.seq[j + k / 2 + 1] == 'G') {
-                std::string kmer = record.seq.substr(j, k);
-                std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
-                std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-                std::string reverse_kmer = btllib::get_reverse_complement(kmer);
-
-                uint64_t hash_fwd = CityHash64(kmer.c_str(), k);
-                uint64_t hash_rev = CityHash64(reverse_kmer.c_str(), k);
-
-                // Pick smaller (canonical form)
-                std::vector<uint64_t> hashes = {std::min(hash_fwd, hash_rev)};
-                if (!methylated_kmers_in_dataset.contains(hashes)) {
+                itr.sub({k/2 - 1}, {'T'});
+                if (!methylated_kmers_in_dataset.contains(itr.hashes())) {
+                    if (record.seq[j + k / 2] == meth_base ) {
+                        itr.sub({k/2 - 1}, {'C'});
+                    }
                     continue;
                 }
-                list_of_meth_states.emplace_back(hashes[0]);
+                list_of_meth_states.emplace_back(itr.hashes()[0]);
+                if (record.seq[j + k / 2] == meth_base ) {
+                    itr.sub({k/2 - 1}, {'C'});
+                }
             }
+            itr.roll();
             // insert into triple
 
         }
