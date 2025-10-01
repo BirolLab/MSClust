@@ -424,7 +424,7 @@ if (avg_phred_score < phred_threshold) {
                 std::string kmer = record.seq.substr(j, k);
                 std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
                 std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-                if (shannon_entropy(kmer) < shannon && shannon_entropy_dimer(kmer) < shannon2 && shannon_entropy_trimer(kmer) < shannon3) {
+                if (shannon_entropy(kmer) < shannon || shannon_entropy_dimer(kmer) < shannon2 || shannon_entropy_trimer(kmer) < shannon3) {
                     continue;
                 }
                 std::string reverse_kmer = btllib::get_reverse_complement(kmer);
@@ -473,7 +473,7 @@ if (avg_phred_score < phred_threshold) {
                     std::string kmer = record.seq.substr(j, k);
                     std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
                     std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-                    if (shannon_entropy(kmer) < shannon && shannon_entropy_dimer(kmer) < shannon2 && shannon_entropy_trimer(kmer) < shannon3) {
+                    if (shannon_entropy(kmer) < shannon || shannon_entropy_dimer(kmer) < shannon2 || shannon_entropy_trimer(kmer) < shannon3) {
                         continue;
                     }
                     std::string reverse_kmer = btllib::get_reverse_complement(kmer);
@@ -496,6 +496,7 @@ if (avg_phred_score < phred_threshold) {
     }
 }
 
+std::unordered_map<uint64_t, std::unordered_set<std::string>> collision_tracker;
 
 for (const auto& [prefix, pair] : pairs) {
     const auto& r1_file = pair.first;
@@ -514,25 +515,25 @@ btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
             char meth_base = dev ? '1' : 'C';
             if (record.seq[j + k / 2] == meth_base && record.seq[j + k / 2 + 1] == 'G') {
                 bool pass_quality = true;
-double total_error_prob = 0.0;
+            double total_error_prob = 0.0;
 
-for (size_t m = 0; m < k; ++m) {
-    int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
-    double error_prob = std::pow(10.0, -phred / 10.0);
-    total_error_prob += error_prob;
-}
+            for (size_t m = 0; m < k; ++m) {
+                int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                double error_prob = std::pow(10.0, -phred / 10.0);
+                total_error_prob += error_prob;
+            }
 
-double avg_error_prob = total_error_prob / k;
-double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+            double avg_error_prob = total_error_prob / k;
+            double avg_phred_score = -10.0 * std::log10(avg_error_prob);
 
-if (avg_phred_score < phred_threshold) {
-    pass_quality = false;
-}
+            if (avg_phred_score < phred_threshold) {
+                pass_quality = false;
+            }
                 if (!pass_quality) continue;
                 std::string kmer = record.seq.substr(j, k);
                 std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
                 std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-                if (shannon_entropy(kmer) < shannon && shannon_entropy_dimer(kmer) < shannon2 && shannon_entropy_trimer(kmer) < shannon3) {
+                if (shannon_entropy(kmer) < shannon || shannon_entropy_dimer(kmer) < shannon2 || shannon_entropy_trimer(kmer) < shannon3) {
                     continue;
                 }
                 std::string reverse_kmer = btllib::get_reverse_complement(kmer);
@@ -546,6 +547,12 @@ if (avg_phred_score < phred_threshold) {
 
                 if (error_kmer.contains(hashes) > minKmer && error_kmer.contains(hashes) < maxKmer) {
                     methylated_kmers_in_dataset.insert(hashes);
+                    uint64_t key = hashes[0] % (30000000000ULL * 8);
+
+                    #pragma omp critical
+                    {
+                        collision_tracker[key].insert(kmer);
+                    }
                     /*double error_sum = 0.0;
                     for (size_t q = j; q < j + k; ++q) {
                         int phred_score = record.qual[q] - 33; // ASCII to Phred
@@ -569,25 +576,25 @@ if (avg_phred_score < phred_threshold) {
                 char meth_base = dev ? '1' : 'C';
                 if (record.seq[j + k / 2] == meth_base && record.seq[j + k / 2 + 1] == 'G') {
         bool pass_quality = true;
-double total_error_prob = 0.0;
+        double total_error_prob = 0.0;
 
-for (size_t m = 0; m < k; ++m) {
-    int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
-    double error_prob = std::pow(10.0, -phred / 10.0);
-    total_error_prob += error_prob;
-}
+        for (size_t m = 0; m < k; ++m) {
+            int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+            double error_prob = std::pow(10.0, -phred / 10.0);
+            total_error_prob += error_prob;
+        }
 
-double avg_error_prob = total_error_prob / k;
-double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+        double avg_error_prob = total_error_prob / k;
+        double avg_phred_score = -10.0 * std::log10(avg_error_prob);
 
-if (avg_phred_score < phred_threshold) {
-    pass_quality = false;
-}
+        if (avg_phred_score < phred_threshold) {
+            pass_quality = false;
+        }
         if (!pass_quality) continue;
                     std::string kmer = record.seq.substr(j, k);
                     std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
                     std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-                    if (shannon_entropy(kmer) < shannon && shannon_entropy_dimer(kmer) < shannon2 && shannon_entropy_trimer(kmer) < shannon3) {
+                    if (shannon_entropy(kmer) < shannon || shannon_entropy_dimer(kmer) < shannon2 || shannon_entropy_trimer(kmer) < shannon3) {
                         continue;
                     }
                     std::string reverse_kmer = btllib::get_reverse_complement(kmer);
@@ -601,6 +608,12 @@ if (avg_phred_score < phred_threshold) {
 
                     if (error_kmer.contains(hashes) > minKmer && error_kmer.contains(hashes) < maxKmer) {
                         methylated_kmers_in_dataset.insert(hashes);
+                        uint64_t key = hashes[0] % (30000000000ULL * 8);
+
+                        #pragma omp critical
+                        {
+                            collision_tracker[key].insert(kmer);
+                        }
                         /*double error_sum = 0.0;
                         for (size_t q = j; q < j + k; ++q) {
                             int phred_score = record.qual[q] - 33; // ASCII to Phred
@@ -648,10 +661,12 @@ std::mutex kmer_mutex;
 std::cerr << "bfSize: " <<  bfSize <<std::endl;
 std::cerr << "making bloom filter" << std::endl;
 int num_lines = 0;
-
+std::unordered_set<uint64_t> universe_skip_index;
 for (const auto& [prefix, pair] : pairs) {
     const auto& r1_file = pair.first;
     const auto& r2_file = pair.second;
+    std::unordered_map<uint64_t, uint8_t> sample_kmer_states;
+    std::unordered_set<uint64_t> sample_skip_index;
 
 
     std::cerr << "reading line " << num_lines++ << std::endl;
@@ -674,14 +689,34 @@ for (const auto& [prefix, pair] : pairs) {
             get_all_methylation_kmers(record.seq, k, methylated_kmers_in_dataset, dev);
 
         for (const auto& kmer : all_kmers) {
-            size_t idx = hash_to_loc_map[kmer.first % (30000000000ULL * 8)];
+
+            uint64_t key = kmer.first % (30000000000ULL * 8);
+
+            auto it = collision_tracker.find(key);
+            if (it != collision_tracker.end() && it->second.size() > 1) {
+                continue;  // Skip: hash collision
+            }
+
+            uint8_t new_state = kmer.second ? 2 : 1;
+
+            #pragma omp critical
+            {
+                auto& state = sample_kmer_states[key];
+                state |= new_state;
+
+                if (state == 3) {
+                    sample_skip_index.insert(key);
+                }
+            }
+
+            size_t idx = hash_to_loc_map[key];
             final_bf[idx] = 1;
             if (kmer.second) {
                 final_meth_bf[idx] = 1;
             }
 
             // Track methylation/unmethylation counts
-            uint64_t key = kmer.first % (30000000000ULL * 8);  // hash modulus for frequency map
+              // hash modulus for frequency map
 
             {
                 std::lock_guard<std::mutex> lock(kmer_mutex);
@@ -705,14 +740,31 @@ for (const auto& [prefix, pair] : pairs) {
                 get_all_methylation_kmers(record.seq, k, methylated_kmers_in_dataset, dev);
 
             for (const auto& kmer : all_kmers) {
-                size_t idx = hash_to_loc_map[kmer.first % (30000000000ULL * 8)];
+                uint64_t key = kmer.first % (30000000000ULL * 8);
+
+                auto it = collision_tracker.find(key);
+                if (it != collision_tracker.end() && it->second.size() > 1) {
+                    continue;  // Skip: hash collision
+                }
+
+            uint8_t new_state = kmer.second ? 2 : 1;
+
+            #pragma omp critical
+            {
+                auto& state = sample_kmer_states[key];
+                state |= new_state;
+
+                if (state == 3) {
+                    sample_skip_index.insert(key);
+                }
+            }
+
+                size_t idx = hash_to_loc_map[key];
                 final_bf[idx] = 1;
                 if (kmer.second) {
                     final_meth_bf[idx] = 1;
                 }
 
-                // Track methylation/unmethylation counts
-                uint64_t key = kmer.first % (30000000000ULL * 8);  // hash modulus for frequency map
 
                 {
                     std::lock_guard<std::mutex> lock(kmer_mutex);
@@ -729,6 +781,9 @@ for (const auto& [prefix, pair] : pairs) {
 
     bfs1.emplace_back(std::move(final_bf));
     methylated_bfs1.emplace_back(std::move(final_meth_bf));
+
+    universe_skip_index.insert(sample_skip_index.begin(), sample_skip_index.end());
+
 }
 
 double total_occurrences = 0.0;
@@ -782,6 +837,7 @@ for (auto& [key, counts] : kmer_counts) {
 
 std::cerr << "calculating jaccard" << std::endl;
 std::cerr << "using tf inverse" << std::endl;
+std::cerr << "skipping all collision" << std::endl;
 // --- keep your includes and existing code ---
 
 // After you finish filling bfs1 and methylated_bfs1 vectors and bfSize is set:
@@ -808,6 +864,9 @@ for (size_t i = 0; i < bfs1.size(); ++i) {
         double sumA = 0.0, sumB = 0.0;
 
         for (size_t k = 0; k < bfSize; ++k) {
+            if (universe_skip_index.find(k) != universe_skip_index.end()) {
+                continue;
+            }
             if (bfs1[i][k] == 1 && bfs1[j][k] == 1) {
                 ++intersection;
                 uint8_t A = methylated_bfs1[i][k];
@@ -844,6 +903,9 @@ for (size_t i = 0; i < bfs1.size(); ++i) {
             double meanB = sumB / shared_sites;
 
             for (size_t k = 0; k < bfSize; ++k) {
+                if (universe_skip_index.find(k) != universe_skip_index.end()) {
+                continue;
+            }
                 if (bfs1[i][k] == 1 && bfs1[j][k] == 1) {
                     double A = methylated_bfs1[i][k];
                     double B = methylated_bfs1[j][k];
