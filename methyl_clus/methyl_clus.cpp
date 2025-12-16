@@ -25,6 +25,22 @@
 
 namespace fs = std::filesystem;
 
+// Generate both C->T and G->A converted k-mers
+std::vector<std::string> generate_converted_kmers(const std::string& kmer, bool dev) {
+    std::string kmer_upper = kmer;
+    std::transform(kmer_upper.begin(), kmer_upper.end(), kmer_upper.begin(), ::toupper);
+
+    char meth_base = dev ? '1' : 'C';
+
+    std::string ct = kmer_upper;
+    std::replace(ct.begin(), ct.end(), meth_base, 'T');
+
+    std::string ga = kmer_upper;
+    std::replace(ga.begin(), ga.end(), 'G', 'A');
+
+    return {ct, ga};
+}
+
 // Pairing logic
 std::map<std::string, std::pair<std::string, std::string>> pair_fastq_files(const std::vector<std::string>& files) {
     std::map<std::string, std::pair<std::string, std::string>> paired_files;
@@ -111,7 +127,7 @@ float shannon_entropy_dimer(const std::string& s) {
 }
 
 
-std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(const std::string& seq, unsigned k, btllib::BloomFilter& methylated_kmers_in_dataset, bool dev) {
+/*std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(const std::string& seq, unsigned k, btllib::BloomFilter& methylated_kmers_in_dataset, bool dev) {
     std::vector<std::pair<uint64_t, bool>> all_kmers_hash;
     for (size_t i = 0; i + k <= seq.size(); ++i) {
         bool is_methylated = false;
@@ -157,7 +173,87 @@ std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(const std::stri
         }
     }
     return all_kmers_hash;
+}*/
+
+
+std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(
+    const std::string& seq,
+    unsigned k,
+    btllib::BloomFilter& methylated_kmers_in_dataset,
+    bool dev
+) {
+    std::vector<std::pair<uint64_t, bool>> all_kmers_hash;
+
+    const size_t seq_len = seq.size();
+    if (seq_len < k) return all_kmers_hash;
+
+    for (size_t i = 0; i + k <= seq_len; ++i) {
+        const size_t mid = i + (k - 1) / 2;
+        //if (mid + 1 >= seq_len) continue;
+
+        // Only look at the two bases in the middle
+        char base1 = seq[mid];
+        char base2 = seq[mid + 1];
+
+        bool is_methylated = false;
+        std::vector<std::string> converted_kmers;
+
+        if (base1 == 'C' && base2 == 'G') {        // CG
+            is_methylated = true;
+        } else if (base1 == 'T' && base2 == 'G') { // TG
+            is_methylated = false;
+        } else if (base1 == 'C' && base2 == 'A') { // CA
+            is_methylated = false;
+        } else {
+            continue; // skip all other central dimers
+        }
+
+        // Now that we know it's valid, generate the full k-mer
+        std::string kmer = seq.substr(i, k);
+
+        // CG: do both C→T and G→A conversions
+        if (base1 == 'C' && base2 == 'G') {
+            std::string ct_kmer = kmer;
+            std::replace(ct_kmer.begin(), ct_kmer.end(), dev ? '1' : 'C', 'T');
+            std::transform(ct_kmer.begin(), ct_kmer.end(), ct_kmer.begin(), ::toupper);
+            converted_kmers.push_back(ct_kmer);
+
+            std::string ga_kmer = kmer;
+            std::replace(ga_kmer.begin(), ga_kmer.end(), 'G', 'A');
+            std::transform(ga_kmer.begin(), ga_kmer.end(), ga_kmer.begin(), ::toupper);
+            converted_kmers.push_back(ga_kmer);
+        }
+        // TG: only C→T
+        else if (base1 == 'T' && base2 == 'G') {
+            std::string ct_kmer = kmer;
+            std::replace(ct_kmer.begin(), ct_kmer.end(), dev ? '1' : 'C', 'T');
+            std::transform(ct_kmer.begin(), ct_kmer.end(), ct_kmer.begin(), ::toupper);
+            converted_kmers.push_back(ct_kmer);
+        }
+        // CA: only G→A
+        else if (base1 == 'C' && base2 == 'A') {
+            std::string ga_kmer = kmer;
+            std::replace(ga_kmer.begin(), ga_kmer.end(), 'G', 'A');
+            std::transform(ga_kmer.begin(), ga_kmer.end(), ga_kmer.begin(), ::toupper);
+            converted_kmers.push_back(ga_kmer);
+        }
+
+        for (const auto& ck : converted_kmers) {
+            std::string rev_ck = btllib::get_reverse_complement(ck);
+            uint64_t hash_fwd = CityHash64WithSeed(ck.c_str(), k, 0);
+            uint64_t hash_rev = CityHash64WithSeed(rev_ck.c_str(), k, 0);
+            uint64_t canonical_hash = std::min(hash_fwd, hash_rev);
+
+            if (!methylated_kmers_in_dataset.contains({canonical_hash})) continue;
+
+            all_kmers_hash.emplace_back(canonical_hash, is_methylated);
+        }
+    }
+
+    return all_kmers_hash;
 }
+
+
 
 int main(int argc, char* argv[]) {
     argparse::ArgumentParser program("example");
@@ -317,18 +413,23 @@ omp_set_num_threads(numThreads);
             for (const auto record : reader) {
                 for (size_t j = 0; j + k <= record.seq.size(); ++j) {
                     char meth_base = dev ? '1' : 'C';
-                    if (record.seq[j + k / 2] == meth_base && record.seq[j + k / 2 + 1] == 'G') {
-                        std::string kmer = record.seq.substr(j, k);
-                        std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
-                        std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-                        float cg1 = shannon_entropy(kmer);
-                        float cg2 = shannon_entropy_dimer(kmer);
-                        float cg3 = shannon_entropy_trimer(kmer);
+                    if (record.seq[j + k / 2 - 1] == meth_base && record.seq[j + k / 2] == 'G') {
+                        std::string orig_kmer = record.seq.substr(j, k);
+                        auto converted_kmers = generate_converted_kmers(orig_kmer, dev);
+                        float cg1 = shannon_entropy(converted_kmers[0]);
+                        float cg2 = shannon_entropy_dimer(converted_kmers[0]);
+                        float cg3 = shannon_entropy_trimer(converted_kmers[0]);
+                        float cg1_rc = shannon_entropy(converted_kmers[1]);
+                        float cg2_rc = shannon_entropy_dimer(converted_kmers[1]);
+                        float cg3_rc = shannon_entropy_trimer(converted_kmers[1]);
             #pragma omp critical 
             {
                         cg_log << cg1 << std::endl;
                         cg2_log << cg2 << std::endl;
                         cg3_log << cg3 << std::endl;
+                        cg_log << cg1_rc << std::endl;
+                        cg2_log << cg2_rc << std::endl;
+                        cg3_log << cg3_rc << std::endl;
             }
                             
                     }
@@ -342,18 +443,23 @@ omp_set_num_threads(numThreads);
                 for (const auto record : reader2) {
                     for (size_t j = 0; j + k <= record.seq.size(); ++j) {
                         char meth_base = dev ? '1' : 'C';
-                        if (record.seq[j + k / 2] == meth_base && record.seq[j + k / 2 + 1] == 'G') {
-                            std::string kmer = record.seq.substr(j, k);
-                            std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
-                            std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
-                            float cg1 = shannon_entropy(kmer);
-                            float cg2 = shannon_entropy_dimer(kmer);
-                            float cg3 = shannon_entropy_trimer(kmer);
+                        if (record.seq[j + k / 2 - 1] == meth_base && record.seq[j + k / 2] == 'G') {
+                        std::string orig_kmer = record.seq.substr(j, k);
+                        auto converted_kmers = generate_converted_kmers(orig_kmer, dev);
+                        float cg1 = shannon_entropy(converted_kmers[0]);
+                        float cg2 = shannon_entropy_dimer(converted_kmers[0]);
+                        float cg3 = shannon_entropy_trimer(converted_kmers[0]);
+                        float cg1_rc = shannon_entropy(converted_kmers[1]);
+                        float cg2_rc = shannon_entropy_dimer(converted_kmers[1]);
+                        float cg3_rc = shannon_entropy_trimer(converted_kmers[1]);
                 #pragma omp critical 
                 {
-                            cg_log << cg1 << std::endl;
-                            cg2_log << cg2 << std::endl;
-                            cg3_log << cg3 << std::endl;
+                        cg_log << cg1 << std::endl;
+                        cg2_log << cg2 << std::endl;
+                        cg3_log << cg3 << std::endl;
+                        cg_log << cg1_rc << std::endl;
+                        cg2_log << cg2_rc << std::endl;
+                        cg3_log << cg3_rc << std::endl;
                 }
                                 
                         }
@@ -375,9 +481,11 @@ omp_set_num_threads(numThreads);
 std::cerr << "making methylated kmers dataset" << std::endl;
 
 //std::unordered_set<uint64_t> methylated_kmers_in_dataset;
-btllib::BloomFilter methylated_kmers_in_dataset(30000000000ULL, 1);
-btllib::BloomFilter all_kmers_in_dataset(30000000000ULL, 1);
-btllib::CountingBloomFilter8 error_kmer(30000000000ULL, 3);
+//uint64_t max_size = max_size;
+uint64_t max_size = 3000000000ULL;
+btllib::BloomFilter methylated_kmers_in_dataset(max_size, 1);
+btllib::BloomFilter all_kmers_in_dataset(max_size, 1);
+btllib::CountingBloomFilter8 error_kmer(max_size, 3);
 
 
 
@@ -403,7 +511,7 @@ for (const auto& [prefix, pair] : pairs) {
     for (const auto record : reader) {
         for (size_t j = 0; j + k <= record.seq.size(); ++j) {
             char meth_base = dev ? '1' : 'C';
-            if (record.seq[j + k / 2] == meth_base && record.seq[j + k / 2 + 1] == 'G') {
+            if (record.seq[j + k / 2 - 1] == meth_base && record.seq[j + k / 2] == 'G') {
 
         bool pass_quality = true;
 double total_error_prob = 0.0;
@@ -421,7 +529,7 @@ if (avg_phred_score < phred_threshold) {
     pass_quality = false;
 }
         if (!pass_quality) continue;
-                std::string kmer = record.seq.substr(j, k);
+                /*std::string kmer = record.seq.substr(j, k);
                 std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
                 std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
                 if (shannon_entropy(kmer) < shannon && shannon_entropy_dimer(kmer) < shannon2 && shannon_entropy_trimer(kmer) < shannon3) {
@@ -434,12 +542,36 @@ if (avg_phred_score < phred_threshold) {
                     uint64_t hash_fwd = CityHash64WithSeed(kmer.c_str(), k, seed);
                     uint64_t hash_rev = CityHash64WithSeed(reverse_kmer.c_str(), k, seed);
                     hashes.push_back(std::min(hash_fwd, hash_rev));
+                }*/
+                std::string orig_kmer = record.seq.substr(j, k);
+                if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                    continue;
+                }
+                auto converted_kmers = generate_converted_kmers(orig_kmer, dev);
+
+                std::vector<uint64_t> hashes;
+                for (auto& ck : converted_kmers) {
+                    std::string rev_ck = btllib::get_reverse_complement(ck);
+
+                    for (unsigned seed = 0; seed < 3; seed++) {
+                        uint64_t hash_fwd = CityHash64WithSeed(ck.c_str(), k, seed);
+                        uint64_t hash_rev = CityHash64WithSeed(rev_ck.c_str(), k, seed);
+                        hashes.push_back(std::min(hash_fwd, hash_rev)); // canonical
+                    }
                 }
 
-                // Pick smaller (canonical form)
-                
-                all_kmers_in_dataset.insert(hashes);
-                error_kmer.insert(hashes);
+                    std::vector<uint64_t> ct_hashes(hashes.begin(), hashes.begin() + 3);
+                    std::vector<uint64_t> ga_hashes;
+                    if (hashes.size() > 3) {
+                        ga_hashes.assign(hashes.begin() + 3, hashes.end());
+                    }
+
+
+                    // Pick smaller (canonical form)
+                    
+                    all_kmers_in_dataset.insert(hashes);
+                    error_kmer.insert(ct_hashes);
+                    error_kmer.insert(ga_hashes);
                 
             }
         }
@@ -453,7 +585,7 @@ if (avg_phred_score < phred_threshold) {
         for (const auto record : reader2) {
             for (size_t j = 0; j + k <= record.seq.size(); ++j) {
                 char meth_base = dev ? '1' : 'C';
-                if (record.seq[j + k / 2] == meth_base && record.seq[j + k / 2 + 1] == 'G') {
+                if (record.seq[j + k / 2 - 1] == meth_base && record.seq[j + k / 2] == 'G') {
         bool pass_quality = true;
 double total_error_prob = 0.0;
 
@@ -470,7 +602,7 @@ if (avg_phred_score < phred_threshold) {
     pass_quality = false;
 }
         if (!pass_quality) continue;
-                    std::string kmer = record.seq.substr(j, k);
+                    /*std::string kmer = record.seq.substr(j, k);
                     std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
                     std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
                     if (shannon_entropy(kmer) < shannon && shannon_entropy_dimer(kmer) < shannon2 && shannon_entropy_trimer(kmer) < shannon3) {
@@ -483,12 +615,35 @@ if (avg_phred_score < phred_threshold) {
                         uint64_t hash_fwd = CityHash64WithSeed(kmer.c_str(), k, seed);
                         uint64_t hash_rev = CityHash64WithSeed(reverse_kmer.c_str(), k, seed);
                         hashes.push_back(std::min(hash_fwd, hash_rev));
+                    }*/
+                    std::string orig_kmer = record.seq.substr(j, k);
+                    if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                        continue;
                     }
+                    auto converted_kmers = generate_converted_kmers(orig_kmer, dev);
+
+                    std::vector<uint64_t> hashes;
+                    for (auto& ck : converted_kmers) {
+                        std::string rev_ck = btllib::get_reverse_complement(ck);
+
+                        for (unsigned seed = 0; seed < 3; seed++) {
+                            uint64_t hash_fwd = CityHash64WithSeed(ck.c_str(), k, seed);
+                            uint64_t hash_rev = CityHash64WithSeed(rev_ck.c_str(), k, seed);
+                            hashes.push_back(std::min(hash_fwd, hash_rev)); // canonical
+                        }
+                    }
+                    std::vector<uint64_t> ct_hashes(hashes.begin(), hashes.begin() + 3);
+                    std::vector<uint64_t> ga_hashes;
+                    if (hashes.size() > 3) {
+                        ga_hashes.assign(hashes.begin() + 3, hashes.end());
+                    }
+
 
                     // Pick smaller (canonical form)
                     
                     all_kmers_in_dataset.insert(hashes);
-                    error_kmer.insert(hashes);
+                    error_kmer.insert(ct_hashes);
+                    error_kmer.insert(ga_hashes);
                     
                 }
             }
@@ -512,24 +667,24 @@ btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
     for (const auto record : reader) {
         for (size_t j = 0; j + k <= record.seq.size(); ++j) {
             char meth_base = dev ? '1' : 'C';
-            if (record.seq[j + k / 2] == meth_base && record.seq[j + k / 2 + 1] == 'G') {
+            if (record.seq[j + k / 2 - 1] == meth_base && record.seq[j + k / 2] == 'G') {
                 bool pass_quality = true;
-double total_error_prob = 0.0;
+                double total_error_prob = 0.0;
 
-for (size_t m = 0; m < k; ++m) {
-    int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
-    double error_prob = std::pow(10.0, -phred / 10.0);
-    total_error_prob += error_prob;
-}
+                for (size_t m = 0; m < k; ++m) {
+                    int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                    double error_prob = std::pow(10.0, -phred / 10.0);
+                    total_error_prob += error_prob;
+                }
 
-double avg_error_prob = total_error_prob / k;
-double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+                double avg_error_prob = total_error_prob / k;
+                double avg_phred_score = -10.0 * std::log10(avg_error_prob);
 
-if (avg_phred_score < phred_threshold) {
-    pass_quality = false;
-}
+                if (avg_phred_score < phred_threshold) {
+                    pass_quality = false;
+                }
                 if (!pass_quality) continue;
-                std::string kmer = record.seq.substr(j, k);
+                /*std::string kmer = record.seq.substr(j, k);
                 std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
                 std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
                 if (shannon_entropy(kmer) < shannon && shannon_entropy_dimer(kmer) < shannon2 && shannon_entropy_trimer(kmer) < shannon3) {
@@ -542,19 +697,42 @@ if (avg_phred_score < phred_threshold) {
                     uint64_t hash_fwd = CityHash64WithSeed(kmer.c_str(), k, seed);
                     uint64_t hash_rev = CityHash64WithSeed(reverse_kmer.c_str(), k, seed);
                     hashes.push_back(std::min(hash_fwd, hash_rev));
+                }*/
+                std::string orig_kmer = record.seq.substr(j, k);
+                if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                    continue;
+                }
+                auto converted_kmers = generate_converted_kmers(orig_kmer, dev);
+
+                std::vector<uint64_t> hashes;
+                for (auto& ck : converted_kmers) {
+                    std::string rev_ck = btllib::get_reverse_complement(ck);
+
+                    for (unsigned seed = 0; seed < 3; seed++) {
+                        uint64_t hash_fwd = CityHash64WithSeed(ck.c_str(), k, seed);
+                        uint64_t hash_rev = CityHash64WithSeed(rev_ck.c_str(), k, seed);
+                        hashes.push_back(std::min(hash_fwd, hash_rev)); // canonical
+                    }
+                }
+                std::vector<uint64_t> ct_hashes(hashes.begin(), hashes.begin() + 3);
+                std::vector<uint64_t> ga_hashes;
+                if (hashes.size() > 3) {
+                    ga_hashes.assign(hashes.begin() + 3, hashes.end());
                 }
 
-                if (error_kmer.contains(hashes) > minKmer && error_kmer.contains(hashes) < maxKmer) {
-                    methylated_kmers_in_dataset.insert(hashes);
-                    /*double error_sum = 0.0;
-                    for (size_t q = j; q < j + k; ++q) {
-                        int phred_score = record.qual[q] - 33; // ASCII to Phred
-                        error_sum += std::pow(10.0, -phred_score / 10.0);
-                    }
-                    double avg_error_rate = error_sum / k * 100;
 
-                    methy_kmer_log << avg_error_rate << '\n';*/
-                } 
+                if (error_kmer.contains(ct_hashes) > minKmer && error_kmer.contains(ct_hashes) < maxKmer) {
+                    methylated_kmers_in_dataset.insert(ct_hashes);
+                    // optional logging code
+                }
+
+
+
+                if (error_kmer.contains(ga_hashes) > minKmer && error_kmer.contains(ga_hashes) < maxKmer) {
+                    methylated_kmers_in_dataset.insert(ga_hashes);
+                    // optional logging code
+                }
+
             }
         }
     }
@@ -567,24 +745,24 @@ if (avg_phred_score < phred_threshold) {
         for (const auto record : reader2) {
             for (size_t j = 0; j + k <= record.seq.size(); ++j) {
                 char meth_base = dev ? '1' : 'C';
-                if (record.seq[j + k / 2] == meth_base && record.seq[j + k / 2 + 1] == 'G') {
-        bool pass_quality = true;
-double total_error_prob = 0.0;
+                if (record.seq[j + k / 2 - 1] == meth_base && record.seq[j + k / 2] == 'G') {
+                    bool pass_quality = true;
+                    double total_error_prob = 0.0;
 
-for (size_t m = 0; m < k; ++m) {
-    int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
-    double error_prob = std::pow(10.0, -phred / 10.0);
-    total_error_prob += error_prob;
-}
+                    for (size_t m = 0; m < k; ++m) {
+                        int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                        double error_prob = std::pow(10.0, -phred / 10.0);
+                        total_error_prob += error_prob;
+                    }
 
-double avg_error_prob = total_error_prob / k;
-double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+                    double avg_error_prob = total_error_prob / k;
+                    double avg_phred_score = -10.0 * std::log10(avg_error_prob);
 
-if (avg_phred_score < phred_threshold) {
-    pass_quality = false;
-}
-        if (!pass_quality) continue;
-                    std::string kmer = record.seq.substr(j, k);
+                    if (avg_phred_score < phred_threshold) {
+                        pass_quality = false;
+                    }
+                    if (!pass_quality) continue;
+                    /*std::string kmer = record.seq.substr(j, k);
                     std::replace(kmer.begin(), kmer.end(), meth_base, 'T');
                     std::transform(kmer.begin(), kmer.end(), kmer.begin(), ::toupper);
                     if (shannon_entropy(kmer) < shannon && shannon_entropy_dimer(kmer) < shannon2 && shannon_entropy_trimer(kmer) < shannon3) {
@@ -601,15 +779,50 @@ if (avg_phred_score < phred_threshold) {
 
                     if (error_kmer.contains(hashes) > minKmer && error_kmer.contains(hashes) < maxKmer) {
                         methylated_kmers_in_dataset.insert(hashes);
-                        /*double error_sum = 0.0;
+                        double error_sum = 0.0;
                         for (size_t q = j; q < j + k; ++q) {
                             int phred_score = record.qual[q] - 33; // ASCII to Phred
                             error_sum += std::pow(10.0, -phred_score / 10.0);
                         }
                         double avg_error_rate = error_sum / k * 100;
 
-                        methy_kmer_log << avg_error_rate << '\n';*/
-                    } 
+                        methy_kmer_log << avg_error_rate << '\n';
+                    }*/
+                    std::string orig_kmer = record.seq.substr(j, k);
+                    if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                        continue;
+                    }
+                    auto converted_kmers = generate_converted_kmers(orig_kmer, dev);
+
+                    std::vector<uint64_t> hashes;
+                    for (auto& ck : converted_kmers) {
+                        std::string rev_ck = btllib::get_reverse_complement(ck);
+
+                        for (unsigned seed = 0; seed < 3; seed++) {
+                            uint64_t hash_fwd = CityHash64WithSeed(ck.c_str(), k, seed);
+                            uint64_t hash_rev = CityHash64WithSeed(rev_ck.c_str(), k, seed);
+                            hashes.push_back(std::min(hash_fwd, hash_rev)); // canonical
+                        }
+                    }
+
+
+                    std::vector<uint64_t> ct_hashes(hashes.begin(), hashes.begin() + 3);
+                    std::vector<uint64_t> ga_hashes;
+                    if (hashes.size() > 3) {
+                        ga_hashes.assign(hashes.begin() + 3, hashes.end());
+                    }
+
+                if (error_kmer.contains(ct_hashes) > minKmer && error_kmer.contains(ct_hashes) < maxKmer) {
+                    methylated_kmers_in_dataset.insert(ct_hashes);
+                    // optional logging code
+                }
+
+
+
+                if (error_kmer.contains(ga_hashes) > minKmer && error_kmer.contains(ga_hashes) < maxKmer) {
+                    methylated_kmers_in_dataset.insert(ga_hashes);
+                    // optional logging code
+                }
                 }
             }
         }
@@ -622,7 +835,7 @@ std::unordered_map<uint64_t, size_t> hash_to_loc_map;
 std::atomic<size_t> all_bfSize(0);
 
 #pragma omp parallel for schedule(static)
-for (uint64_t i = 0; i < 30000000000ULL * 8; ++i) {
+for (uint64_t i = 0; i < max_size * 8; ++i) {
     if (all_kmers_in_dataset.contains({i})) {  // Bloom filter says 'possibly present'
         all_bfSize.fetch_add(1, std::memory_order_relaxed);  // unique dense index
     }
@@ -634,7 +847,7 @@ std::cerr << "all_bfSize: " <<  all_bfSize <<std::endl;
 std::atomic<size_t> bfSize(0);
 
 #pragma omp parallel for schedule(static)
-for (uint64_t i = 0; i < 30000000000ULL * 8; ++i) {
+for (uint64_t i = 0; i < max_size * 8; ++i) {
     if (methylated_kmers_in_dataset.contains({i})) {  // Bloom filter says 'possibly present'
         size_t index = bfSize.fetch_add(1, std::memory_order_relaxed);  // unique dense index
         #pragma omp critical
@@ -674,14 +887,14 @@ for (const auto& [prefix, pair] : pairs) {
             get_all_methylation_kmers(record.seq, k, methylated_kmers_in_dataset, dev);
 
         for (const auto& kmer : all_kmers) {
-            size_t idx = hash_to_loc_map[kmer.first % (30000000000ULL * 8)];
+            size_t idx = hash_to_loc_map[kmer.first % (max_size * 8)];
             final_bf[idx] = 1;
             if (kmer.second) {
                 final_meth_bf[idx] = 1;
             }
 
             // Track methylation/unmethylation counts
-            uint64_t key = kmer.first % (30000000000ULL * 8);  // hash modulus for frequency map
+            uint64_t key = kmer.first % (max_size * 8);  // hash modulus for frequency map
 
             {
                 std::lock_guard<std::mutex> lock(kmer_mutex);
@@ -705,14 +918,14 @@ for (const auto& [prefix, pair] : pairs) {
                 get_all_methylation_kmers(record.seq, k, methylated_kmers_in_dataset, dev);
 
             for (const auto& kmer : all_kmers) {
-                size_t idx = hash_to_loc_map[kmer.first % (30000000000ULL * 8)];
+                size_t idx = hash_to_loc_map[kmer.first % (max_size * 8)];
                 final_bf[idx] = 1;
                 if (kmer.second) {
                     final_meth_bf[idx] = 1;
                 }
 
                 // Track methylation/unmethylation counts
-                uint64_t key = kmer.first % (30000000000ULL * 8);  // hash modulus for frequency map
+                uint64_t key = kmer.first % (max_size * 8);  // hash modulus for frequency map
 
                 {
                     std::lock_guard<std::mutex> lock(kmer_mutex);
