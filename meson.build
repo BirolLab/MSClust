@@ -9,7 +9,7 @@ openmp_dep = dependency('openmp')
 compiler = meson.get_compiler('cpp')
 btllib_dep = compiler.find_library('btllib')
 boost_math_dep = compiler.find_library('boost_math_c99')
-
+boost_dep = dependency('boost')
 
 add_project_arguments(
 '-Wno-error=implicit-fallthrough=',
@@ -26,6 +26,7 @@ language : 'c'
 
 subdir('methyl_clus')
 subdir('methyl_class')
+subdir('diagnostics_script')
 
 
 rootpath = meson.source_root()
