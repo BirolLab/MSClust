@@ -414,21 +414,19 @@ std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(
     //btllib::BsHash bh(seq, 1, k, "CG"); 
     btllib::BsHashDirectional bh(seq, 1, k, "CT"); 
     btllib::BsHashDirectional bh_ga(seq, 1, k, "GA"); 
-    while (bh.roll()) { 
+    while (bh.roll() && bh_ga.roll()) { 
         bool is_methylated = false;
         auto central_dimer = bh.center_dimer();
         if (central_dimer == "TG" || central_dimer == "CG" || central_dimer == "CA") {
             if (central_dimer == "CG") {
                 is_methylated = true; // double check it exists here, if not flag kmer and hash, add entropy and kmer check
-                if (!methylated_kmers_in_dataset.contains(bh.hashes())) { 
-                    continue; 
-                } else {
+                if (methylated_kmers_in_dataset.contains(bh.hashes())) { 
                     all_kmers_hash.push_back(std::make_pair(bh.hashes()[0], is_methylated));
                 }
-                if (!methylated_kmers_in_dataset.contains(bh_ga.hashes())) { 
-                    continue; 
-                } else {
+                if (methylated_kmers_in_dataset.contains(bh_ga.hashes())) { 
                     all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
+                } else {
+                    continue;
                 }
             } 
             if (central_dimer == "TG") {
@@ -728,7 +726,7 @@ for (const auto& [prefix, pair] : pairs) {
         //for (size_t j = 0; j + k <= record.seq.size(); ++j) {
         btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
         btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
-        while(bh.roll()) {
+        while(bh.roll() && bh_ga.roll()) {
             
             size_t  j = bh.get_pos();
             std::string_view kmer{record.seq.data() + j, k};
@@ -776,6 +774,12 @@ for (const auto& [prefix, pair] : pairs) {
                     }*/
                 //std::string orig_kmer = record.seq.substr(j, k);
                 std::string_view orig_kmer{record.seq.data() + j, k};
+size_t num_dimers = k / 2;
+size_t center_dimer = num_dimers / 2;
+size_t center_pos = center_dimer * 2;
+
+std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+assert(center_from_kmer == central_dimer);
                 if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
                     continue;
                 }
@@ -827,7 +831,7 @@ for (const auto& [prefix, pair] : pairs) {
             btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
             btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
             //for (size_t j = 0; j + k <= record.seq.size(); ++j) {
-            while(bh.roll()) {
+            while(bh.roll() && bh_ga.roll()) {
                 size_t  j = bh.get_pos();
                 //char meth_base = dev ? '1' : 'C';
                 //if (record.seq[j + k / 2 - 1] == meth_base && record.seq[j + k / 2] == 'G') {
@@ -866,6 +870,12 @@ for (const auto& [prefix, pair] : pairs) {
                     }*/
                     //std::string orig_kmer = record.seq.substr(j, k);
                     std::string_view orig_kmer{record.seq.data() + j, k};
+size_t num_dimers = k / 2;
+size_t center_dimer = num_dimers / 2;
+size_t center_pos = center_dimer * 2;
+
+std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+assert(center_from_kmer == central_dimer);
                     if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
                         continue;
                     }
@@ -923,7 +933,7 @@ btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
         //for (size_t j = 0; j + k <= record.seq.size(); ++j) {
         btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
         btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
-        while(bh.roll()) {
+        while(bh.roll() && bh_ga.roll()) {
             size_t  j = bh.get_pos();
             //char meth_base = dev ? '1' : 'C';
             //if (record.seq[j + k / 2 - 1] == meth_base && record.seq[j + k / 2] == 'G') {
@@ -962,6 +972,12 @@ btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
                 }*/
                 //std::string orig_kmer = record.seq.substr(j, k);
                 std::string_view orig_kmer{record.seq.data() + j, k};
+size_t num_dimers = k / 2;
+size_t center_dimer = num_dimers / 2;
+size_t center_pos = center_dimer * 2;
+
+std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+assert(center_from_kmer == central_dimer);
                 if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
                     continue;
                 }
@@ -1020,7 +1036,7 @@ btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
             btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
             btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
             //for (size_t j = 0; j + k <= record.seq.size(); ++j) {
-            while(bh.roll()) {
+            while(bh.roll() && bh_ga.roll()) {
                 size_t j = bh.get_pos();
                 //char meth_base = dev ? '1' : 'C';
                 //if (record.seq[j + k / 2 - 1] == meth_base && record.seq[j + k / 2] == 'G') {
@@ -1071,6 +1087,12 @@ btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
                     }*/
                     //std::string orig_kmer = record.seq.substr(j, k);
                     std::string_view orig_kmer{record.seq.data() + j, k};
+size_t num_dimers = k / 2;
+size_t center_dimer = num_dimers / 2;
+size_t center_pos = center_dimer * 2;
+
+std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+assert(center_from_kmer == central_dimer);
                     if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
                         continue;
                     }
