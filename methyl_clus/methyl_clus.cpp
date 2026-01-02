@@ -230,73 +230,81 @@ std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(
         btllib::BsHashDirectional bh(kmer, 1, k, "CT"); 
         btllib::BsHashDirectional bh_ga(kmer, 1, k, "GA"); 
 
-        // CG: do both C→T and G→A conversions
-        /*if (base1 == 'C' && base2 == 'G') {
-            std::string ct_kmer = kmer;
-            std::replace(ct_kmer.begin(), ct_kmer.end(), dev ? '1' : 'C', 'T');
-            std::transform(ct_kmer.begin(), ct_kmer.end(), ct_kmer.begin(), ::toupper);
-            converted_kmers.push_back(ct_kmer);
 
-            std::string ga_kmer = kmer;
-            std::replace(ga_kmer.begin(), ga_kmer.end(), 'G', 'A');
-            std::transform(ga_kmer.begin(), ga_kmer.end(), ga_kmer.begin(), ::toupper);
-            converted_kmers.push_back(ga_kmer);
-        }
-        // TG: only C→T
-        else if (base1 == 'T' && base2 == 'G') {
-            std::string ct_kmer = kmer;
-            std::replace(ct_kmer.begin(), ct_kmer.end(), dev ? '1' : 'C', 'T');
-            std::transform(ct_kmer.begin(), ct_kmer.end(), ct_kmer.begin(), ::toupper);
-            converted_kmers.push_back(ct_kmer);
-        }
-        // CA: only G→A
-        else if (base1 == 'C' && base2 == 'A') {
-            std::string ga_kmer = kmer;
-            std::replace(ga_kmer.begin(), ga_kmer.end(), 'G', 'A');
-            std::transform(ga_kmer.begin(), ga_kmer.end(), ga_kmer.begin(), ::toupper);
-            converted_kmers.push_back(ga_kmer);
-        }
-
-        for (const auto& ck : converted_kmers) {
-            std::string rev_ck = btllib::get_reverse_complement(ck);
-            uint64_t hash_fwd = CityHash64WithSeed(ck.c_str(), k, 0);
-            uint64_t hash_rev = CityHash64WithSeed(rev_ck.c_str(), k, 0);
-            uint64_t canonical_hash = std::min(hash_fwd, hash_rev);
-
-            if (!methylated_kmers_in_dataset.contains({canonical_hash})) continue;
-
-            all_kmers_hash.emplace_back(canonical_hash, is_methylated);
-        }*/
         if (base1 == 'C' && base2 == 'G') {
             bh.roll();
             bh_ga.roll();
             if (methylated_kmers_in_dataset.contains(bh.hashes())) { 
                 all_kmers_hash.push_back(std::make_pair(bh.hashes()[0], is_methylated));
-            } else if (methylated_kmers_in_dataset.contains(bh_ga.hashes())) { 
-                all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
-            } else {
-                continue;
             }
-        }
+            if (methylated_kmers_in_dataset.contains(bh_ga.hashes())) { 
+                all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
+            }         }
         // TG: only C→T
         else if (base1 == 'T' && base2 == 'G') {
             bh.roll();
-            if (!methylated_kmers_in_dataset.contains(bh.hashes())) { 
-                continue; 
-            } else {
+            if (methylated_kmers_in_dataset.contains(bh.hashes())) { 
                 all_kmers_hash.push_back(std::make_pair(bh.hashes()[0], is_methylated));
             }
         }
         // CA: only G→A
         else if (base1 == 'C' && base2 == 'A') {
             bh_ga.roll();
-            if (!methylated_kmers_in_dataset.contains(bh_ga.hashes())) { 
-                continue; 
-            } else {
+            if (methylated_kmers_in_dataset.contains(bh_ga.hashes())) { 
                 all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
             }
         }
     }
+
+
+    /*std::vector<std::pair<uint64_t, bool>> all_kmers_hash2;
+    btllib::BsHashDirectional bh(seq, 1, k, "CT"); 
+    btllib::BsHashDirectional bh_ga(seq, 1, k, "GA"); 
+    while (bh.roll() && bh_ga.roll()) { 
+        bool is_methylated = false;
+        auto central_dimer = bh.center_dimer();
+        if (central_dimer == "TG" || central_dimer == "CG" || central_dimer == "CA") {
+            if (central_dimer == "CG") {
+                is_methylated = true; // double check it exists here, if not flag kmer and hash, add entropy and kmer check
+                if (methylated_kmers_in_dataset.contains(bh.hashes())) { 
+                    all_kmers_hash2.push_back(std::make_pair(bh.hashes()[0], is_methylated));
+                }
+                if (methylated_kmers_in_dataset.contains(bh_ga.hashes())) { 
+                    all_kmers_hash2.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
+                }
+            } 
+            if (central_dimer == "TG") {
+                if (methylated_kmers_in_dataset.contains(bh.hashes())) { 
+                    all_kmers_hash2.push_back(std::make_pair(bh.hashes()[0], is_methylated));
+                }
+            } 
+            if (central_dimer == "CA") {
+                if (methylated_kmers_in_dataset.contains(bh_ga.hashes())) { 
+                    all_kmers_hash2.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
+                }
+            } 
+	    }
+    }
+
+if (all_kmers_hash.size() != all_kmers_hash2.size()) {
+    std::cerr << "all_kmers_hash size mismatch\n"
+              << "hash1 size = " << all_kmers_hash.size()
+              << ", hash2 size = " << all_kmers_hash2.size() << '\n'
+              << "seq = " << seq << '\n';
+    assert(false);
+}
+
+for (size_t i = 0; i < all_kmers_hash.size(); ++i) {
+    if (all_kmers_hash[i] != all_kmers_hash2[i]) {
+        std::cerr << "all_kmers_hash mismatch at index " << i << '\n'
+                  << "hash1 = (" << all_kmers_hash[i].first
+                  << ", " << all_kmers_hash[i].second << ")\n"
+                  << "hash2 = (" << all_kmers_hash2[i].first
+                  << ", " << all_kmers_hash2[i].second << ")\n"
+                  << "seq = " << seq << '\n';
+        assert(false);
+    }
+}*/
 
     return all_kmers_hash;
 }
@@ -557,6 +565,8 @@ for (const auto& [prefix, pair] : pairs) {
 
 #pragma omp parallel
     for (const auto record : reader) {
+        //std::vector<size_t> pos_roll;
+        //std::vector<size_t> pos_man;
         for (size_t j = 0; j + k <= record.seq.size(); ++j) {
             char meth_base = dev ? '1' : 'C';
             if (record.seq[j + k / 2 - 1] == meth_base && record.seq[j + k / 2] == 'G') {
@@ -637,9 +647,72 @@ if (avg_phred_score < phred_threshold) {
                 bh_ga.roll();
                 error_kmer.insert(bh.hashes());
                 error_kmer.insert(bh_ga.hashes());
+                //pos_man.emplace_back(j);
                 
             }
         }
+
+        /*btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
+        btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
+        while(bh.roll() && bh_ga.roll()) {
+           size_t  j = bh.get_pos();
+            std::string_view kmer{record.seq.data() + j, k};
+
+            auto central_dimer = bh.center_dimer();
+            if (central_dimer == "CG") {
+                bool pass_quality = true;
+                double total_error_prob = 0.0;
+
+                for (size_t m = 0; m < k; ++m) {
+                    int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                    double error_prob = std::pow(10.0, -phred / 10.0);
+                    total_error_prob += error_prob;
+                }
+
+                double avg_error_prob = total_error_prob / k;
+                double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+
+                if (avg_phred_score < phred_threshold) {
+                    pass_quality = false;
+                }
+                if (!pass_quality) continue;
+
+                std::string orig_kmer = record.seq.substr(j, k);
+                size_t num_dimers = k / 2;
+                size_t center_dimer = num_dimers / 2;
+                size_t center_pos = center_dimer * 2;
+
+                std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+                assert(center_from_kmer == central_dimer);
+                if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                    continue;
+                }
+                pos_roll.emplace_back(j);
+            }
+        }
+        if (pos_roll.size() != pos_man.size()) {
+            std::cerr << "pos_roll / pos_man size mismatch\n"
+                    << "roll size = " << pos_roll.size()
+                    << ", man size = " << pos_man.size() << '\n'
+                    << "seq = " << record.seq << '\n';
+            assert(false);
+        }
+
+        if (!std::equal(pos_roll.begin(), pos_roll.end(), pos_man.begin())) {
+            std::cerr << "pos_roll / pos_man content mismatch\n"
+                    << "seq = " << record.seq << '\n';
+
+            for (size_t i = 0; i < pos_roll.size(); ++i) {
+                if (pos_roll[i] != pos_man[i]) {
+                    std::cerr << "first mismatch at i=" << i
+                            << " roll=" << pos_roll[i]
+                            << " man=" << pos_man[i] << '\n';
+                    break;
+                }
+            }
+            assert(false);
+        }*/
+
     }
     if (!pair.second.empty()) {
 
@@ -648,6 +721,8 @@ if (avg_phred_score < phred_threshold) {
 
 #pragma omp parallel
         for (const auto record : reader2) {
+            //std::vector<size_t> pos_roll;
+            //std::vector<size_t> pos_man;
             for (size_t j = 0; j + k <= record.seq.size(); ++j) {
                 char meth_base = dev ? '1' : 'C';
                 if (record.seq[j + k / 2 - 1] == meth_base && record.seq[j + k / 2] == 'G') {
@@ -726,12 +801,75 @@ if (avg_phred_score < phred_threshold) {
                     bh_ga.roll();
                     error_kmer.insert(bh.hashes());
                     error_kmer.insert(bh_ga.hashes());
+                    //pos_man.emplace_back(j);
                     
                 }
             }
+            /*btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
+            btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
+            while(bh.roll() && bh_ga.roll()) {
+            size_t  j = bh.get_pos();
+                std::string_view kmer{record.seq.data() + j, k};
+
+                auto central_dimer = bh.center_dimer();
+                if (central_dimer == "CG") {
+                    bool pass_quality = true;
+                    double total_error_prob = 0.0;
+
+                    for (size_t m = 0; m < k; ++m) {
+                        int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                        double error_prob = std::pow(10.0, -phred / 10.0);
+                        total_error_prob += error_prob;
+                    }
+
+                    double avg_error_prob = total_error_prob / k;
+                    double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+
+                    if (avg_phred_score < phred_threshold) {
+                        pass_quality = false;
+                    }
+                    if (!pass_quality) continue;
+
+                    std::string orig_kmer = record.seq.substr(j, k);
+                    size_t num_dimers = k / 2;
+                    size_t center_dimer = num_dimers / 2;
+                    size_t center_pos = center_dimer * 2;
+
+                    std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+                    assert(center_from_kmer == central_dimer);
+                    if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                        continue;
+                    }
+                    pos_roll.emplace_back(j);
+                }
+            }
+            if (pos_roll.size() != pos_man.size()) {
+                std::cerr << "2nd pos_roll / pos_man size mismatch\n"
+                        << "roll size = " << pos_roll.size()
+                        << ", man size = " << pos_man.size() << '\n'
+                        << "seq = " << record.seq << '\n';
+                assert(false);
+            }
+
+            if (!std::equal(pos_roll.begin(), pos_roll.end(), pos_man.begin())) {
+                std::cerr << "2nd pos_roll / pos_man content mismatch\n"
+                        << "seq = " << record.seq << '\n';
+
+                for (size_t i = 0; i < pos_roll.size(); ++i) {
+                    if (pos_roll[i] != pos_man[i]) {
+                        std::cerr << "first mismatch at i=" << i
+                                << " roll=" << pos_roll[i]
+                                << " man=" << pos_man[i] << '\n';
+                        break;
+                    }
+                }
+                assert(false);
+            }*/
         }
     }
 }
+std::cerr << "done checking cg pos" << std::endl;
+//exit(0);
 
 
 for (const auto& [prefix, pair] : pairs) {
