@@ -160,9 +160,9 @@ std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(
     const btllib::BloomFilter& clean_ct_mers_ca,
     const btllib::BloomFilter& clean_ga_mers_ca,
     const btllib::BloomFilter& clean_ct_mers_ct,
-    const btllib::BloomFilter& clean_ga_mers_ct,
-    const btllib::BloomFilter& clean_ct_mers_cc,
-    const btllib::BloomFilter& clean_ga_mers_cc
+    const btllib::BloomFilter& clean_ga_mers_ct
+   // const btllib::BloomFilter& clean_ct_mers_cc,
+    //const btllib::BloomFilter& clean_ga_mers_cc
 ) {
     
     std::vector<std::pair<uint64_t, bool>> all_kmers_hash;
@@ -250,7 +250,7 @@ std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(
                 }
             } 
 	    }
-        if (central_dimer == "TT" || central_dimer == "CC") {
+        /*if (central_dimer == "TT" || central_dimer == "CC") {
             if (central_dimer == "CC") {
                 is_methylated = true; // double check it exists here, if not flag kmer and hash, add entropy and kmer check
                 if (clean_ct_mers_cc.contains(bh.hashes())) { 
@@ -277,7 +277,7 @@ std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(
                     all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
                 }
             } 
-	    }
+	    }*/
     }
     return all_kmers_hash;
 }
@@ -524,8 +524,8 @@ btllib::BloomFilter clean_ct_mers_ca(max_size, 1);
 btllib::BloomFilter clean_ga_mers_ca(max_size, 1);
 btllib::BloomFilter clean_ct_mers_ct(max_size, 1);
 btllib::BloomFilter clean_ga_mers_ct(max_size, 1);
-btllib::BloomFilter clean_ct_mers_cc(max_size, 1);
-btllib::BloomFilter clean_ga_mers_cc(max_size, 1);
+//btllib::BloomFilter clean_ct_mers_cc(max_size, 1);
+//btllib::BloomFilter clean_ga_mers_cc(max_size, 1);
 btllib::BloomFilter methylated_kmers_in_dataset(max_size, 1);
 //btllib::BloomFilter all_kmers_in_dataset(max_size, 1);
 btllib::CountingBloomFilter8 error_kmer_ct(max_size, 3);
@@ -534,8 +534,8 @@ btllib::CountingBloomFilter8 error_kmer_ct_ca(max_size, 3);
 btllib::CountingBloomFilter8 error_kmer_ga_ca(max_size, 3);
 btllib::CountingBloomFilter8 error_kmer_ct_ct(max_size, 3);
 btllib::CountingBloomFilter8 error_kmer_ga_ct(max_size, 3);
-btllib::CountingBloomFilter8 error_kmer_ct_cc(max_size, 3);
-btllib::CountingBloomFilter8 error_kmer_ga_cc(max_size, 3);
+//btllib::CountingBloomFilter8 error_kmer_ct_cc(max_size, 3);
+//btllib::CountingBloomFilter8 error_kmer_ga_cc(max_size, 3);
 
 
 
@@ -681,7 +681,7 @@ assert(center_from_kmer == central_dimer);
                 }
               
             }
-            if (central_dimer == "CC" || central_dimer == "GG") {
+            /*if (central_dimer == "CC" || central_dimer == "GG") {
                 bool pass_quality = true;
                 double total_error_prob = 0.0;
 
@@ -716,7 +716,7 @@ assert(center_from_kmer == central_dimer);
                     error_kmer_ga_cc.insert(bh_ga.hashes());
                 }
               
-            }
+            }*/
         }
     }
     if (!pair.second.empty()) {
@@ -845,7 +845,7 @@ assert(center_from_kmer == central_dimer);
                     }
                 
                 }
-                if (central_dimer == "CC" || central_dimer == "GG") {
+                /*if (central_dimer == "CC" || central_dimer == "GG") {
                     bool pass_quality = true;
                     double total_error_prob = 0.0;
 
@@ -880,7 +880,7 @@ assert(center_from_kmer == central_dimer);
                         error_kmer_ga_cc.insert(bh_ga.hashes());
                     }
                 
-                }
+                }*/
             }
         }
     }
@@ -1032,7 +1032,7 @@ btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
                     }
                 }
             }
-            if (central_dimer == "CC" || central_dimer == "GG") {
+            /*if (central_dimer == "CC" || central_dimer == "GG") {
 
                 bool pass_quality = true;
                 double total_error_prob = 0.0;
@@ -1072,7 +1072,7 @@ btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
                     prelim_ga_mers_cc.insert(bh_ga.hashes());
                     }
                 }
-            }
+            }*/
         }
     }
 
@@ -1208,7 +1208,7 @@ btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
                         }
                     }
                 }
-                if (central_dimer == "CC" || central_dimer == "GG") {
+                /*if (central_dimer == "CC" || central_dimer == "GG") {
 
                     bool pass_quality = true;
                     double total_error_prob = 0.0;
@@ -1248,7 +1248,7 @@ btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
                         prelim_ga_mers_cc.insert(bh_ga.hashes());
                         }
                     }
-                }
+                }*/
             }
         }
     }
@@ -1316,7 +1316,7 @@ for (const auto& [prefix, pair] : pairs) {
                    methylated_kmers_in_dataset.insert(bh_ga.hashes());
                 }
             }
-            if (central_dimer == "TT") {
+            /*if (central_dimer == "TT") {
                 if (prelim_ct_mers_cc.contains(bh.hashes())) {
                     clean_ct_mers_cc.insert(bh.hashes());
                     methylated_kmers_in_dataset.insert(bh.hashes());
@@ -1327,7 +1327,7 @@ for (const auto& [prefix, pair] : pairs) {
                    clean_ga_mers_cc.insert(bh_ga.hashes());
                    methylated_kmers_in_dataset.insert(bh_ga.hashes());
                 }
-            }
+            }*/
         }
     }
 
@@ -1384,7 +1384,7 @@ for (const auto& [prefix, pair] : pairs) {
                     methylated_kmers_in_dataset.insert(bh_ga.hashes());
                     }
                 }
-                if (central_dimer == "TT") {
+                /*if (central_dimer == "TT") {
                     if (prelim_ct_mers_cc.contains(bh.hashes())) {
                         clean_ct_mers_cc.insert(bh.hashes());
                         methylated_kmers_in_dataset.insert(bh.hashes());
@@ -1395,7 +1395,7 @@ for (const auto& [prefix, pair] : pairs) {
                     clean_ga_mers_cc.insert(bh_ga.hashes());
                     methylated_kmers_in_dataset.insert(bh_ga.hashes());
                     }
-                }
+                }*/
             }
         }
     }
@@ -1464,7 +1464,7 @@ for (const auto& [prefix, pair] : pairs) {
 //#pragma omp critical
 //{
         all_kmers =
-            get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers, clean_ct_mers_ca, clean_ga_mers_ca, clean_ct_mers_ct, clean_ga_mers_ct, clean_ct_mers_cc, clean_ga_mers_cc);//, shannon, shannon2, shannon3, record.qual, phred_threshold);
+            get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers, clean_ct_mers_ca, clean_ga_mers_ca, clean_ct_mers_ct, clean_ga_mers_ct);//, clean_ct_mers_cc, clean_ga_mers_cc);//, shannon, shannon2, shannon3, record.qual, phred_threshold);
 //}
 
         //std::cerr << "Done checking get all meth" <<  std::endl;
@@ -1508,7 +1508,7 @@ for (const auto& [prefix, pair] : pairs) {
 //#pragma omp critical
 //{
         all_kmers =
-                get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers, clean_ct_mers_ca, clean_ga_mers_ca, clean_ct_mers_ct, clean_ga_mers_ct, clean_ct_mers_cc, clean_ga_mers_cc);//, shannon, shannon2, shannon3, record.qual, phred_threshold);
+                get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers, clean_ct_mers_ca, clean_ga_mers_ca, clean_ct_mers_ct, clean_ga_mers_ct);//, clean_ct_mers_cc, clean_ga_mers_cc);//, shannon, shannon2, shannon3, record.qual, phred_threshold);
 //}
 
             for (const auto& kmer : all_kmers) {
