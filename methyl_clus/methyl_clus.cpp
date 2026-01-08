@@ -156,7 +156,13 @@ std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(
     const std::string& seq,
     unsigned k,
     const btllib::BloomFilter& clean_ct_mers,
-    const btllib::BloomFilter& clean_ga_mers//, const float shannon,  const float shannon2,  const float shannon3, const std::string&  qual,int phred_threshold
+    const btllib::BloomFilter& clean_ga_mers,//, const float shannon,  const float shannon2,  const float shannon3, const std::string&  qual,int phred_threshold
+    const btllib::BloomFilter& clean_ct_mers_ca,
+    const btllib::BloomFilter& clean_ga_mers_ca,
+    const btllib::BloomFilter& clean_ct_mers_ct,
+    const btllib::BloomFilter& clean_ga_mers_ct,
+    const btllib::BloomFilter& clean_ct_mers_cc,
+    const btllib::BloomFilter& clean_ga_mers_cc
 ) {
     
     std::vector<std::pair<uint64_t, bool>> all_kmers_hash;
@@ -188,9 +194,95 @@ std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(
                 }
             } 
 	    }
+        if (central_dimer == "TA" || central_dimer == "CA") {
+            if (central_dimer == "CA") {
+                is_methylated = true; // double check it exists here, if not flag kmer and hash, add entropy and kmer check
+                if (clean_ct_mers_ca.contains(bh.hashes())) { 
+                    all_kmers_hash.push_back(std::make_pair(bh.hashes()[0], is_methylated));
+                }
+            } 
+            if (central_dimer == "TA") {
+                if (clean_ct_mers_ca.contains(bh.hashes())) { 
+                    all_kmers_hash.push_back(std::make_pair(bh.hashes()[0], is_methylated));
+                }
+            } 
+	    }
+        if (central_dimer == "TG" || central_dimer == "TA") {
+            if (central_dimer == "TG") {
+                is_methylated = true; // double check it exists here, if not flag kmer and hash, add entropy and kmer check
+                if (clean_ga_mers_ca.contains(bh_ga.hashes())) { 
+                    all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
+                } else {
+                    continue;
+                }
+            } 
+            if (central_dimer == "TA") {
+                if (clean_ga_mers_ca.contains(bh_ga.hashes())) { 
+                    all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
+                }
+            } 
+	    }
+        if (central_dimer == "TT" || central_dimer == "CT") {
+            if (central_dimer == "CT") {
+                is_methylated = true; // double check it exists here, if not flag kmer and hash, add entropy and kmer check
+                if (clean_ct_mers_ct.contains(bh.hashes())) { 
+                    all_kmers_hash.push_back(std::make_pair(bh.hashes()[0], is_methylated));
+                }
+            } 
+            if (central_dimer == "TT") {
+                if (clean_ct_mers_ct.contains(bh.hashes())) { 
+                    all_kmers_hash.push_back(std::make_pair(bh.hashes()[0], is_methylated));
+                }
+            } 
+	    }
+        if (central_dimer == "AG" || central_dimer == "AA") {
+            if (central_dimer == "AG") {
+                is_methylated = true; // double check it exists here, if not flag kmer and hash, add entropy and kmer check
+                if (clean_ga_mers_ct.contains(bh_ga.hashes())) { 
+                    all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
+                } else {
+                    continue;
+                }
+            } 
+            if (central_dimer == "AA") {
+                if (clean_ga_mers_ct.contains(bh_ga.hashes())) { 
+                    all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
+                }
+            } 
+	    }
+        if (central_dimer == "TT" || central_dimer == "CC") {
+            if (central_dimer == "CC") {
+                is_methylated = true; // double check it exists here, if not flag kmer and hash, add entropy and kmer check
+                if (clean_ct_mers_cc.contains(bh.hashes())) { 
+                    all_kmers_hash.push_back(std::make_pair(bh.hashes()[0], is_methylated));
+                }
+            } 
+            if (central_dimer == "TT") {
+                if (clean_ct_mers_cc.contains(bh.hashes())) { 
+                    all_kmers_hash.push_back(std::make_pair(bh.hashes()[0], is_methylated));
+                }
+            } 
+	    }
+        if (central_dimer == "GG" || central_dimer == "AA") {
+            if (central_dimer == "GG") {
+                is_methylated = true; // double check it exists here, if not flag kmer and hash, add entropy and kmer check
+                if (clean_ga_mers_cc.contains(bh_ga.hashes())) { 
+                    all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
+                } else {
+                    continue;
+                }
+            } 
+            if (central_dimer == "AA") {
+                if (clean_ga_mers_cc.contains(bh_ga.hashes())) { 
+                    all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
+                }
+            } 
+	    }
     }
     return all_kmers_hash;
 }
+
+
 
 
 
@@ -420,12 +512,30 @@ std::cerr << "making methylated kmers dataset" << std::endl;
 uint64_t max_size = 3000000000ULL;
 btllib::BloomFilter prelim_ct_mers(max_size, 1);
 btllib::BloomFilter prelim_ga_mers(max_size, 1);
+btllib::BloomFilter prelim_ct_mers_ca(max_size, 1);
+btllib::BloomFilter prelim_ga_mers_ca(max_size, 1);
+btllib::BloomFilter prelim_ct_mers_ct(max_size, 1);
+btllib::BloomFilter prelim_ga_mers_ct(max_size, 1);
+btllib::BloomFilter prelim_ct_mers_cc(max_size, 1);
+btllib::BloomFilter prelim_ga_mers_cc(max_size, 1);
 btllib::BloomFilter clean_ct_mers(max_size, 1);
 btllib::BloomFilter clean_ga_mers(max_size, 1);
+btllib::BloomFilter clean_ct_mers_ca(max_size, 1);
+btllib::BloomFilter clean_ga_mers_ca(max_size, 1);
+btllib::BloomFilter clean_ct_mers_ct(max_size, 1);
+btllib::BloomFilter clean_ga_mers_ct(max_size, 1);
+btllib::BloomFilter clean_ct_mers_cc(max_size, 1);
+btllib::BloomFilter clean_ga_mers_cc(max_size, 1);
 btllib::BloomFilter methylated_kmers_in_dataset(max_size, 1);
 //btllib::BloomFilter all_kmers_in_dataset(max_size, 1);
 btllib::CountingBloomFilter8 error_kmer_ct(max_size, 3);
 btllib::CountingBloomFilter8 error_kmer_ga(max_size, 3);
+btllib::CountingBloomFilter8 error_kmer_ct_ca(max_size, 3);
+btllib::CountingBloomFilter8 error_kmer_ga_ca(max_size, 3);
+btllib::CountingBloomFilter8 error_kmer_ct_ct(max_size, 3);
+btllib::CountingBloomFilter8 error_kmer_ga_ct(max_size, 3);
+btllib::CountingBloomFilter8 error_kmer_ct_cc(max_size, 3);
+btllib::CountingBloomFilter8 error_kmer_ga_cc(max_size, 3);
 
 
 
@@ -499,6 +609,114 @@ assert(center_from_kmer == central_dimer);
                 error_kmer_ga.insert(bh_ga.hashes());
               
             }
+            if (central_dimer == "CA" || central_dimer == "TG") {
+                bool pass_quality = true;
+                double total_error_prob = 0.0;
+
+                for (size_t m = 0; m < k; ++m) {
+                    int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                    double error_prob = std::pow(10.0, -phred / 10.0);
+                    total_error_prob += error_prob;
+                }
+
+                double avg_error_prob = total_error_prob / k;
+                double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+
+
+                if (avg_phred_score < phred_threshold) {
+                    pass_quality = false;
+                }
+                if (!pass_quality) continue;
+                std::string_view orig_kmer{record.seq.data() + j, k};
+                size_t num_dimers = k / 2;
+                size_t center_dimer = num_dimers / 2;
+                size_t center_pos = center_dimer * 2;
+
+                std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+                assert(center_from_kmer == central_dimer);
+                if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                    continue;
+                }
+                if (central_dimer == "CA") {
+                    error_kmer_ct_ca.insert(bh.hashes());
+                }
+                if (central_dimer == "TG") {
+                    error_kmer_ga_ca.insert(bh_ga.hashes());
+                }
+              
+            }
+            if (central_dimer == "CT" || central_dimer == "AG") {
+                bool pass_quality = true;
+                double total_error_prob = 0.0;
+
+                for (size_t m = 0; m < k; ++m) {
+                    int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                    double error_prob = std::pow(10.0, -phred / 10.0);
+                    total_error_prob += error_prob;
+                }
+
+                double avg_error_prob = total_error_prob / k;
+                double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+
+
+                if (avg_phred_score < phred_threshold) {
+                    pass_quality = false;
+                }
+                if (!pass_quality) continue;
+                std::string_view orig_kmer{record.seq.data() + j, k};
+                size_t num_dimers = k / 2;
+                size_t center_dimer = num_dimers / 2;
+                size_t center_pos = center_dimer * 2;
+
+                std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+                assert(center_from_kmer == central_dimer);
+                if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                    continue;
+                }
+                if (central_dimer == "CT") {
+                    error_kmer_ct_ct.insert(bh.hashes());
+                }
+                if (central_dimer == "AG") {
+                    error_kmer_ga_ct.insert(bh_ga.hashes());
+                }
+              
+            }
+            if (central_dimer == "CC" || central_dimer == "GG") {
+                bool pass_quality = true;
+                double total_error_prob = 0.0;
+
+                for (size_t m = 0; m < k; ++m) {
+                    int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                    double error_prob = std::pow(10.0, -phred / 10.0);
+                    total_error_prob += error_prob;
+                }
+
+                double avg_error_prob = total_error_prob / k;
+                double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+
+
+                if (avg_phred_score < phred_threshold) {
+                    pass_quality = false;
+                }
+                if (!pass_quality) continue;
+                std::string_view orig_kmer{record.seq.data() + j, k};
+                size_t num_dimers = k / 2;
+                size_t center_dimer = num_dimers / 2;
+                size_t center_pos = center_dimer * 2;
+
+                std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+                assert(center_from_kmer == central_dimer);
+                if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                    continue;
+                }
+                if (central_dimer == "CC") {
+                    error_kmer_ct_cc.insert(bh.hashes());
+                }
+                if (central_dimer == "GG") {
+                    error_kmer_ga_cc.insert(bh_ga.hashes());
+                }
+              
+            }
         }
     }
     if (!pair.second.empty()) {
@@ -555,6 +773,114 @@ assert(center_from_kmer == central_dimer);
                     error_kmer_ga.insert(bh_ga.hashes());
                     
                 }
+                if (central_dimer == "CA" || central_dimer == "TG") {
+                    bool pass_quality = true;
+                    double total_error_prob = 0.0;
+
+                    for (size_t m = 0; m < k; ++m) {
+                        int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                        double error_prob = std::pow(10.0, -phred / 10.0);
+                        total_error_prob += error_prob;
+                    }
+
+                    double avg_error_prob = total_error_prob / k;
+                    double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+
+
+                    if (avg_phred_score < phred_threshold) {
+                        pass_quality = false;
+                    }
+                    if (!pass_quality) continue;
+                    std::string_view orig_kmer{record.seq.data() + j, k};
+                    size_t num_dimers = k / 2;
+                    size_t center_dimer = num_dimers / 2;
+                    size_t center_pos = center_dimer * 2;
+
+                    std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+                    assert(center_from_kmer == central_dimer);
+                    if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                        continue;
+                    }
+                    if (central_dimer == "CA") {
+                        error_kmer_ct_ca.insert(bh.hashes());
+                    }
+                    if (central_dimer == "TG") {
+                        error_kmer_ga_ca.insert(bh_ga.hashes());
+                    }
+                
+                }
+                if (central_dimer == "CT" || central_dimer == "AG") {
+                    bool pass_quality = true;
+                    double total_error_prob = 0.0;
+
+                    for (size_t m = 0; m < k; ++m) {
+                        int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                        double error_prob = std::pow(10.0, -phred / 10.0);
+                        total_error_prob += error_prob;
+                    }
+
+                    double avg_error_prob = total_error_prob / k;
+                    double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+
+
+                    if (avg_phred_score < phred_threshold) {
+                        pass_quality = false;
+                    }
+                    if (!pass_quality) continue;
+                    std::string_view orig_kmer{record.seq.data() + j, k};
+                    size_t num_dimers = k / 2;
+                    size_t center_dimer = num_dimers / 2;
+                    size_t center_pos = center_dimer * 2;
+
+                    std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+                    assert(center_from_kmer == central_dimer);
+                    if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                        continue;
+                    }
+                    if (central_dimer == "CT") {
+                        error_kmer_ct_ct.insert(bh.hashes());
+                    }
+                    if (central_dimer == "AG") {
+                        error_kmer_ga_ct.insert(bh_ga.hashes());
+                    }
+                
+                }
+                if (central_dimer == "CC" || central_dimer == "GG") {
+                    bool pass_quality = true;
+                    double total_error_prob = 0.0;
+
+                    for (size_t m = 0; m < k; ++m) {
+                        int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                        double error_prob = std::pow(10.0, -phred / 10.0);
+                        total_error_prob += error_prob;
+                    }
+
+                    double avg_error_prob = total_error_prob / k;
+                    double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+
+
+                    if (avg_phred_score < phred_threshold) {
+                        pass_quality = false;
+                    }
+                    if (!pass_quality) continue;
+                    std::string_view orig_kmer{record.seq.data() + j, k};
+                    size_t num_dimers = k / 2;
+                    size_t center_dimer = num_dimers / 2;
+                    size_t center_pos = center_dimer * 2;
+
+                    std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+                    assert(center_from_kmer == central_dimer);
+                    if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                        continue;
+                    }
+                    if (central_dimer == "CC") {
+                        error_kmer_ct_cc.insert(bh.hashes());
+                    }
+                    if (central_dimer == "GG") {
+                        error_kmer_ga_cc.insert(bh_ga.hashes());
+                    }
+                
+                }
             }
         }
     }
@@ -607,12 +933,12 @@ btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
                 if (!pass_quality) continue;
 
                 std::string_view orig_kmer{record.seq.data() + j, k};
-size_t num_dimers = k / 2;
-size_t center_dimer = num_dimers / 2;
-size_t center_pos = center_dimer * 2;
+                size_t num_dimers = k / 2;
+                size_t center_dimer = num_dimers / 2;
+                size_t center_pos = center_dimer * 2;
 
-std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
-assert(center_from_kmer == central_dimer);
+                std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+                assert(center_from_kmer == central_dimer);
                 if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
                     continue;
                 }
@@ -622,6 +948,129 @@ assert(center_from_kmer == central_dimer);
                 }
                 if (error_kmer_ga.contains(bh_ga.hashes()) > minKmer && error_kmer_ga.contains(bh_ga.hashes()) < maxKmer) {
                    prelim_ga_mers.insert(bh_ga.hashes());
+                }
+            }
+            if (central_dimer == "CA" || central_dimer == "TG") {
+
+                bool pass_quality = true;
+                double total_error_prob = 0.0;
+
+                for (size_t m = 0; m < k; ++m) {
+                    int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                    double error_prob = std::pow(10.0, -phred / 10.0);
+                    total_error_prob += error_prob;
+                }
+
+                double avg_error_prob = total_error_prob / k;
+                double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+
+                if (avg_phred_score < phred_threshold) {
+                    pass_quality = false;
+                }
+                if (!pass_quality) continue;
+
+                std::string_view orig_kmer{record.seq.data() + j, k};
+                size_t num_dimers = k / 2;
+                size_t center_dimer = num_dimers / 2;
+                size_t center_pos = center_dimer * 2;
+
+                std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+                assert(center_from_kmer == central_dimer);
+                if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                    continue;
+                }
+                if (central_dimer == "CA") {
+                    if (error_kmer_ct_ca.contains(bh.hashes()) > minKmer && error_kmer_ct_ca.contains(bh.hashes()) < maxKmer) {
+                        prelim_ct_mers_ca.insert(bh.hashes());
+
+                    }
+                }
+                if (central_dimer == "TG") {
+                    if (error_kmer_ga_ca.contains(bh_ga.hashes()) > minKmer && error_kmer_ga_ca.contains(bh_ga.hashes()) < maxKmer) {
+                    prelim_ga_mers_ca.insert(bh_ga.hashes());
+                    }
+                }
+            }
+            if (central_dimer == "CT" || central_dimer == "AG") {
+
+                bool pass_quality = true;
+                double total_error_prob = 0.0;
+
+                for (size_t m = 0; m < k; ++m) {
+                    int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                    double error_prob = std::pow(10.0, -phred / 10.0);
+                    total_error_prob += error_prob;
+                }
+
+                double avg_error_prob = total_error_prob / k;
+                double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+
+                if (avg_phred_score < phred_threshold) {
+                    pass_quality = false;
+                }
+                if (!pass_quality) continue;
+
+                std::string_view orig_kmer{record.seq.data() + j, k};
+                size_t num_dimers = k / 2;
+                size_t center_dimer = num_dimers / 2;
+                size_t center_pos = center_dimer * 2;
+
+                std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+                assert(center_from_kmer == central_dimer);
+                if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                    continue;
+                }
+                if (central_dimer == "CT") {
+                    if (error_kmer_ct_ct.contains(bh.hashes()) > minKmer && error_kmer_ct_ct.contains(bh.hashes()) < maxKmer) {
+                        prelim_ct_mers_ct.insert(bh.hashes());
+
+                    }
+                }
+                if (central_dimer == "AG") {
+                    if (error_kmer_ga_ct.contains(bh_ga.hashes()) > minKmer && error_kmer_ga_ct.contains(bh_ga.hashes()) < maxKmer) {
+                    prelim_ga_mers_ct.insert(bh_ga.hashes());
+                    }
+                }
+            }
+            if (central_dimer == "CC" || central_dimer == "GG") {
+
+                bool pass_quality = true;
+                double total_error_prob = 0.0;
+
+                for (size_t m = 0; m < k; ++m) {
+                    int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                    double error_prob = std::pow(10.0, -phred / 10.0);
+                    total_error_prob += error_prob;
+                }
+
+                double avg_error_prob = total_error_prob / k;
+                double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+
+                if (avg_phred_score < phred_threshold) {
+                    pass_quality = false;
+                }
+                if (!pass_quality) continue;
+
+                std::string_view orig_kmer{record.seq.data() + j, k};
+                size_t num_dimers = k / 2;
+                size_t center_dimer = num_dimers / 2;
+                size_t center_pos = center_dimer * 2;
+
+                std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+                assert(center_from_kmer == central_dimer);
+                if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                    continue;
+                }
+                if (central_dimer == "CC") {
+                    if (error_kmer_ct_cc.contains(bh.hashes()) > minKmer && error_kmer_ct_cc.contains(bh.hashes()) < maxKmer) {
+                        prelim_ct_mers_cc.insert(bh.hashes());
+
+                    }
+                }
+                if (central_dimer == "GG") {
+                    if (error_kmer_ga_cc.contains(bh_ga.hashes()) > minKmer && error_kmer_ga_cc.contains(bh_ga.hashes()) < maxKmer) {
+                    prelim_ga_mers_cc.insert(bh_ga.hashes());
+                    }
                 }
             }
         }
@@ -678,6 +1127,128 @@ assert(center_from_kmer == central_dimer);
                         prelim_ga_mers.insert(bh_ga.hashes());
                     }
                 }
+                if (central_dimer == "CA" || central_dimer == "TG") {
+                    bool pass_quality = true;
+                    double total_error_prob = 0.0;
+
+                    for (size_t m = 0; m < k; ++m) {
+                        int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                        double error_prob = std::pow(10.0, -phred / 10.0);
+                        total_error_prob += error_prob;
+                    }
+
+                    double avg_error_prob = total_error_prob / k;
+                    double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+
+                    if (avg_phred_score < phred_threshold) {
+                        pass_quality = false;
+                    }
+                    if (!pass_quality) continue;
+
+                    std::string_view orig_kmer{record.seq.data() + j, k};
+                    size_t num_dimers = k / 2;
+                    size_t center_dimer = num_dimers / 2;
+                    size_t center_pos = center_dimer * 2;
+
+                    std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+                    assert(center_from_kmer == central_dimer);
+                    if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                        continue;
+                    }
+                    if (central_dimer == "CA") {
+                        if (error_kmer_ct_ca.contains(bh.hashes()) > minKmer && error_kmer_ct_ca.contains(bh.hashes()) < maxKmer) {
+                            prelim_ct_mers_ca.insert(bh.hashes());
+
+                        }
+                    }
+                    if (central_dimer == "TG") {
+                        if (error_kmer_ga_ca.contains(bh_ga.hashes()) > minKmer && error_kmer_ga_ca.contains(bh_ga.hashes()) < maxKmer) {
+                        prelim_ga_mers_ca.insert(bh_ga.hashes());
+                        }
+                    }
+                }
+                if (central_dimer == "CT" || central_dimer == "AG") {
+
+                    bool pass_quality = true;
+                    double total_error_prob = 0.0;
+
+                    for (size_t m = 0; m < k; ++m) {
+                        int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                        double error_prob = std::pow(10.0, -phred / 10.0);
+                        total_error_prob += error_prob;
+                    }
+
+                    double avg_error_prob = total_error_prob / k;
+                    double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+
+                    if (avg_phred_score < phred_threshold) {
+                        pass_quality = false;
+                    }
+                    if (!pass_quality) continue;
+
+                    std::string_view orig_kmer{record.seq.data() + j, k};
+                    size_t num_dimers = k / 2;
+                    size_t center_dimer = num_dimers / 2;
+                    size_t center_pos = center_dimer * 2;
+
+                    std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+                    assert(center_from_kmer == central_dimer);
+                    if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                        continue;
+                    }
+                    if (central_dimer == "CT") {
+                        if (error_kmer_ct_ct.contains(bh.hashes()) > minKmer && error_kmer_ct_ct.contains(bh.hashes()) < maxKmer) {
+                            prelim_ct_mers_ct.insert(bh.hashes());
+
+                        }
+                    }
+                    if (central_dimer == "AG") {
+                        if (error_kmer_ga_ct.contains(bh_ga.hashes()) > minKmer && error_kmer_ga_ct.contains(bh_ga.hashes()) < maxKmer) {
+                        prelim_ga_mers_ct.insert(bh_ga.hashes());
+                        }
+                    }
+                }
+                if (central_dimer == "CC" || central_dimer == "GG") {
+
+                    bool pass_quality = true;
+                    double total_error_prob = 0.0;
+
+                    for (size_t m = 0; m < k; ++m) {
+                        int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
+                        double error_prob = std::pow(10.0, -phred / 10.0);
+                        total_error_prob += error_prob;
+                    }
+
+                    double avg_error_prob = total_error_prob / k;
+                    double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+
+                    if (avg_phred_score < phred_threshold) {
+                        pass_quality = false;
+                    }
+                    if (!pass_quality) continue;
+
+                    std::string_view orig_kmer{record.seq.data() + j, k};
+                    size_t num_dimers = k / 2;
+                    size_t center_dimer = num_dimers / 2;
+                    size_t center_pos = center_dimer * 2;
+
+                    std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+                    assert(center_from_kmer == central_dimer);
+                    if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                        continue;
+                    }
+                    if (central_dimer == "CC") {
+                        if (error_kmer_ct_cc.contains(bh.hashes()) > minKmer && error_kmer_ct_cc.contains(bh.hashes()) < maxKmer) {
+                            prelim_ct_mers_cc.insert(bh.hashes());
+
+                        }
+                    }
+                    if (central_dimer == "GG") {
+                        if (error_kmer_ga_cc.contains(bh_ga.hashes()) > minKmer && error_kmer_ga_cc.contains(bh_ga.hashes()) < maxKmer) {
+                        prelim_ga_mers_cc.insert(bh_ga.hashes());
+                        }
+                    }
+                }
             }
         }
     }
@@ -721,6 +1292,42 @@ for (const auto& [prefix, pair] : pairs) {
                    methylated_kmers_in_dataset.insert(bh_ga.hashes());
                 }
             }
+            if (central_dimer == "TA") {
+                if (prelim_ct_mers_ca.contains(bh.hashes())) {
+                    clean_ct_mers_ca.insert(bh.hashes());
+                    methylated_kmers_in_dataset.insert(bh.hashes());
+                }
+            }
+            if (central_dimer == "TA") {
+                if (prelim_ga_mers_ca.contains(bh_ga.hashes())) {
+                   clean_ga_mers_ca.insert(bh_ga.hashes());
+                   methylated_kmers_in_dataset.insert(bh_ga.hashes());
+                }
+            }
+            if (central_dimer == "TT") {
+                if (prelim_ct_mers_ct.contains(bh.hashes())) {
+                    clean_ct_mers_ct.insert(bh.hashes());
+                    methylated_kmers_in_dataset.insert(bh.hashes());
+                }
+            }
+            if (central_dimer == "AA") {
+                if (prelim_ga_mers_ct.contains(bh_ga.hashes())) {
+                   clean_ga_mers_ct.insert(bh_ga.hashes());
+                   methylated_kmers_in_dataset.insert(bh_ga.hashes());
+                }
+            }
+            if (central_dimer == "TT") {
+                if (prelim_ct_mers_cc.contains(bh.hashes())) {
+                    clean_ct_mers_cc.insert(bh.hashes());
+                    methylated_kmers_in_dataset.insert(bh.hashes());
+                }
+            }
+            if (central_dimer == "AA") {
+                if (prelim_ga_mers_cc.contains(bh_ga.hashes())) {
+                   clean_ga_mers_cc.insert(bh_ga.hashes());
+                   methylated_kmers_in_dataset.insert(bh_ga.hashes());
+                }
+            }
         }
     }
 
@@ -751,6 +1358,42 @@ for (const auto& [prefix, pair] : pairs) {
                     if (prelim_ga_mers.contains(bh_ga.hashes())) {
                         clean_ga_mers.insert(bh_ga.hashes());
                         methylated_kmers_in_dataset.insert(bh_ga.hashes());
+                    }
+                }
+                if (central_dimer == "TA") {
+                    if (prelim_ct_mers_ca.contains(bh.hashes())) {
+                        clean_ct_mers_ca.insert(bh.hashes());
+                        methylated_kmers_in_dataset.insert(bh.hashes());
+                    }
+                }
+                if (central_dimer == "TA") {
+                    if (prelim_ga_mers_ca.contains(bh_ga.hashes())) {
+                    clean_ga_mers_ca.insert(bh_ga.hashes());
+                    methylated_kmers_in_dataset.insert(bh_ga.hashes());
+                    }
+                }
+                if (central_dimer == "TT") {
+                    if (prelim_ct_mers_ct.contains(bh.hashes())) {
+                        clean_ct_mers_ct.insert(bh.hashes());
+                        methylated_kmers_in_dataset.insert(bh.hashes());
+                    }
+                }
+                if (central_dimer == "AA") {
+                    if (prelim_ga_mers_ct.contains(bh_ga.hashes())) {
+                    clean_ga_mers_ct.insert(bh_ga.hashes());
+                    methylated_kmers_in_dataset.insert(bh_ga.hashes());
+                    }
+                }
+                if (central_dimer == "TT") {
+                    if (prelim_ct_mers_cc.contains(bh.hashes())) {
+                        clean_ct_mers_cc.insert(bh.hashes());
+                        methylated_kmers_in_dataset.insert(bh.hashes());
+                    }
+                }
+                if (central_dimer == "AA") {
+                    if (prelim_ga_mers_cc.contains(bh_ga.hashes())) {
+                    clean_ga_mers_cc.insert(bh_ga.hashes());
+                    methylated_kmers_in_dataset.insert(bh_ga.hashes());
                     }
                 }
             }
@@ -821,7 +1464,7 @@ for (const auto& [prefix, pair] : pairs) {
 //#pragma omp critical
 //{
         all_kmers =
-            get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers);//, shannon, shannon2, shannon3, record.qual, phred_threshold);
+            get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers, clean_ct_mers_ca, clean_ga_mers_ca, clean_ct_mers_ct, clean_ga_mers_ct, clean_ct_mers_cc, clean_ga_mers_cc);//, shannon, shannon2, shannon3, record.qual, phred_threshold);
 //}
 
         //std::cerr << "Done checking get all meth" <<  std::endl;
@@ -865,7 +1508,7 @@ for (const auto& [prefix, pair] : pairs) {
 //#pragma omp critical
 //{
         all_kmers =
-                get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers);//, shannon, shannon2, shannon3, record.qual, phred_threshold);
+                get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers, clean_ct_mers_ca, clean_ga_mers_ca, clean_ct_mers_ct, clean_ga_mers_ct, clean_ct_mers_cc, clean_ga_mers_cc);//, shannon, shannon2, shannon3, record.qual, phred_threshold);
 //}
 
             for (const auto& kmer : all_kmers) {
