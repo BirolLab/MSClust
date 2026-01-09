@@ -192,7 +192,78 @@ std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(
     return all_kmers_hash;
 }
 
+void export_matrices(const std::vector<std::vector<uint8_t>>& bfs1, 
+                     const std::vector<std::vector<uint8_t>>& methylated_bfs1, 
+                     const std::vector<size_t>& final_indices,
+                     const std::vector<std::string>& sample_names,
+                     bool dev) {
+    
+    size_t numSamples = bfs1.size();
+    std::vector<size_t> cuts = {1000, 2000, 5000, 50000};
+    std::vector<std::ofstream> files(cuts.size());
+    
+    for (size_t f = 0; f < cuts.size(); ++f) {
+        size_t actual_cut = std::min(cuts[f], final_indices.size());
+        files[f].open("methylation_top_" + std::to_string(actual_cut) + ".csv");
+        
+        // Header: Add "Sample_ID" as the first column
+        files[f] << "Sample_ID";
+        for (size_t j = 0; j < actual_cut; ++j) {
+            files[f] << ",Site_" << final_indices[j];
+        }
+        files[f] << "\n";
+    }
 
+    for (size_t i = 0; i < numSamples; ++i) {
+        // --- START OF YOUR NAME CLEANING LOGIC ---
+        std::string raw_name = sample_names[i];
+        std::string clean_name;
+
+        if (dev) {
+            size_t pos = raw_name.find("GSM");
+            size_t pos2 = raw_name.find("_aligned_reads.fasta");
+            if (pos != std::string::npos && pos2 != std::string::npos)
+                clean_name = raw_name.substr(pos, pos2 - pos);
+            else
+                clean_name = raw_name;
+        } else {
+            size_t pos = raw_name.find_last_of("/");
+            size_t pos2 = raw_name.find_first_of(".fq");
+            if (pos2 == std::string::npos) pos2 = raw_name.find_first_of(".fastq");
+            
+            size_t start = (pos == std::string::npos) ? 0 : pos + 1;
+            if (pos2 != std::string::npos && pos2 > start)
+                clean_name = raw_name.substr(start, pos2 - start);
+            else
+                clean_name = raw_name.substr(start);
+        }
+        // --- END OF NAME CLEANING LOGIC ---
+
+        // Prepare the row data
+        std::vector<int> sample_row(final_indices.size());
+        #pragma omp parallel for schedule(static)
+        for (size_t j = 0; j < final_indices.size(); ++j) {
+            size_t site_idx = final_indices[j];
+            if (bfs1[i][site_idx] == 0) {
+                sample_row[j] = 0;
+            } else {
+                sample_row[j] = (methylated_bfs1[i][site_idx] == 1) ? 1 : -1;
+            }
+        }
+
+        // Write to files
+        for (size_t f = 0; f < cuts.size(); ++f) {
+            size_t actual_cut = std::min(cuts[f], final_indices.size());
+            files[f] << clean_name; // Prepend Sample Name
+            for (size_t j = 0; j < actual_cut; ++j) {
+                files[f] << "," << sample_row[j];
+            }
+            files[f] << "\n";
+        }
+    }
+
+    for (auto& f : files) f.close();
+}
 
 int main(int argc, char* argv[]) {
     argparse::ArgumentParser program("example");
@@ -960,101 +1031,69 @@ if (!output_hamming.is_open() || !output_cosine.is_open() || !output_pearson.is_
     return 1;
 }
 
+size_t numSamples = bfs1.size();
+std::vector<std::atomic<uint32_t>> site_counts(bfSize);
+for (size_t k = 0; k < bfSize; ++k) site_counts[k].store(0);
+
 #pragma omp parallel for schedule(dynamic)
-for (size_t i = 0; i < bfs1.size(); ++i) {
-    for (size_t j = i + 1; j < bfs1.size(); ++j) {
-        double intersection = 0;
-        double methylated_intersection = 0;
-        double dot = 0.0;
-        double sumAi2_cos = 0.0, sumAj2_cos = 0.0;
-        double sumAiAj = 0.0, sumAi2 = 0.0, sumAj2 = 0.0;
-        double shared_sites = 0;
-        double sumA = 0.0, sumB = 0.0;
-
-        for (size_t k = 0; k < bfSize; ++k) {
-            if (bfs1[i][k] == 1 && bfs1[j][k] == 1) {
-                ++intersection;
-                uint8_t A = methylated_bfs1[i][k];
-                uint8_t B = methylated_bfs1[j][k];
-
-                if (A == B) {
-                    auto it = kmer_counts.find(k);
-                    if (it != kmer_counts.end()) {
-                        if (A == 0)
-                            methylated_intersection += it->second.first;   // unmethylated TF-IDF
-                        else
-                            methylated_intersection += it->second.second;  // methylated TF-IDF
-                    }
-                }
-
-                // For Cosine
-                dot += A * B;
-                sumAi2_cos += A * A;
-                sumAj2_cos += B * B;
-
-                // For Pearson
-                sumA += A;
-                sumB += B;
-                ++shared_sites;
-            }
-        }
-
-        double cosine_sim = (sumAi2_cos > 0 && sumAj2_cos > 0) ? dot / (sqrt(sumAi2_cos) * sqrt(sumAj2_cos)) : 0.0;
-        double pearson_sim = 0.0;
-        double jaccard = intersection > 0 ? static_cast<double>(methylated_intersection) / intersection : 0.0;
-
-        if (shared_sites > 0) {
-            double meanA = sumA / shared_sites;
-            double meanB = sumB / shared_sites;
-
-            for (size_t k = 0; k < bfSize; ++k) {
-                if (bfs1[i][k] == 1 && bfs1[j][k] == 1) {
-                    double A = methylated_bfs1[i][k];
-                    double B = methylated_bfs1[j][k];
-                    double dA = A - meanA;
-                    double dB = B - meanB;
-                    sumAiAj += dA * dB;
-                    sumAi2 += dA * dA;
-                    sumAj2 += dB * dB;
-                }
-            }
-
-            pearson_sim = (sumAi2 > 0 && sumAj2 > 0) ? sumAiAj / (sqrt(sumAi2) * sqrt(sumAj2)) : 0.0;
-        }
-
-        /*size_t pos = 0, pos2 = 0, pos3 = 0, pos4 = 0;
-        if (dev) {
-            pos = sample_names[i].find("GSM");
-            pos2 = sample_names[i].find("_aligned_reads.fasta");
-            pos3 = sample_names[j].find("GSM");
-            pos4 = sample_names[j].find("_aligned_reads.fasta");
-        } else {
-            pos = sample_names[i].find_last_of("/");
-            pos3 = sample_names[j].find_last_of("/");
-            pos2 = sample_names[i].find_first_of(".fq");
-            pos4 = sample_names[j].find_first_of(".fq");
-            if (pos2 == std::string::npos) pos2 = sample_names[i].find_first_of(".fastq");
-            if (pos4 == std::string::npos) pos4 = sample_names[j].find_first_of(".fastq");
-        }*/
-
-        std::string name1 = sample_names[i];
-        std::string name2 = sample_names[j];
-        #pragma omp critical
-        {
-            output_hamming << name1 << "\t" << name2 << "\t" << jaccard << "\n";
-            output_cosine << name1 << "\t" << name2 << "\t" << cosine_sim << "\n";
-            output_pearson << name1 << "\t" << name2 << "\t" << pearson_sim << "\n";
+for (size_t i = 0; i < numSamples; ++i) {
+    for (size_t k = 0; k < bfSize; ++k) {
+        if (bfs1[i][k] == 1) {
+            site_counts[k].fetch_add(1, std::memory_order_relaxed);
         }
     }
 }
 
+// Identify top 20% sites (Sorting is typically fast enough on main thread)
+std::vector<size_t> indices(bfSize);
+std::iota(indices.begin(), indices.end(), 0);
+std::sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
+    return site_counts[a].load() > site_counts[b].load();
+});
 
-output_hamming.close();
-output_cosine.close();
-output_pearson.close();
+size_t top20_limit = static_cast<size_t>(bfSize * 0.20);
+std::vector<size_t> top_observed_indices(indices.begin(), indices.begin() + top20_limit);
 
 
+struct SiteInfo {
+    size_t index;
+    double entropy;
+};
 
+std::vector<SiteInfo> site_results(top20_limit);
+
+#pragma omp parallel for schedule(dynamic)
+for (size_t idx = 0; idx < top20_limit; ++idx) {
+    size_t k = top_observed_indices[idx];
+    uint32_t count0 = 0, count1 = 0;
+
+    for (size_t i = 0; i < numSamples; ++i) {
+        if (bfs1[i][k] == 1) {
+            (methylated_bfs1[i][k] == 1) ? count1++ : count0++;
+        }
+    }
+
+    double total = count0 + count1;
+    double entropy = 0.0;
+    if (total > 0) {
+        double p0 = count0 / total;
+        double p1 = count1 / total;
+        if (p0 > 0) entropy -= p0 * std::log2(p0);
+        if (p1 > 0) entropy -= p1 * std::log2(p1);
+    }
+    site_results[idx] = {k, entropy};
+}
+
+// Filter to top 50,000 sites by entropy
+std::sort(site_results.begin(), site_results.end(), [](const SiteInfo& a, const SiteInfo& b) {
+    return a.entropy > b.entropy;
+});
+
+size_t final_count = std::min((size_t)50000, site_results.size());
+std::vector<size_t> final_indices(final_count);
+for (size_t i = 0; i < final_count; ++i) final_indices[i] = site_results[i].index;
+
+export_matrices(bfs1, methylated_bfs1, final_indices, sample_names, dev);
 
 
     return 0;
