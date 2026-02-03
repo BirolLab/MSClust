@@ -199,7 +199,7 @@ void export_matrices(const std::vector<std::vector<uint8_t>>& bfs1,
                      bool dev) {
     
     size_t numSamples = bfs1.size();
-    std::vector<size_t> cuts = {1000, 2000, 5000, 50000};
+    std::vector<size_t> cuts = {2000000, 5000000, 10000000, 20000000};
     std::vector<std::ofstream> files(cuts.size());
     
     for (size_t f = 0; f < cuts.size(); ++f) {
@@ -1051,7 +1051,7 @@ std::sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
     return site_counts[a].load() > site_counts[b].load();
 });
 
-size_t top20_limit = static_cast<size_t>(bfSize * 0.20);
+size_t top20_limit = static_cast<size_t>(bfSize * 1);
 std::vector<size_t> top_observed_indices(indices.begin(), indices.begin() + top20_limit);
 
 
@@ -1088,8 +1088,8 @@ for (size_t idx = 0; idx < top20_limit; ++idx) {
 std::sort(site_results.begin(), site_results.end(), [](const SiteInfo& a, const SiteInfo& b) {
     return a.entropy > b.entropy;
 });
-
-size_t final_count = std::min((size_t)50000, site_results.size());
+std::cerr << "total CG signals count: " << bfSize << std::endl; 
+size_t final_count = std::min((size_t)20000000, site_results.size());
 std::vector<size_t> final_indices(final_count);
 for (size_t i = 0; i < final_count; ++i) final_indices[i] = site_results[i].index;
 
