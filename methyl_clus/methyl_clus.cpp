@@ -23,6 +23,8 @@
 
 #include <regex>
 #include <filesystem>
+#include <chrono>
+using Clock = std::chrono::steady_clock;
 
 namespace fs = std::filesystem;
 
@@ -38,6 +40,8 @@ double calculate_avg_phred(const std::string& qual) {
     if (avg_prob <= 0) return 99.0; 
     return -10.0 * std::log10(avg_prob);
 }
+
+
 
 // Generate both C->T and G->A converted k-mers
 std::vector<std::string> generate_converted_kmers(const std::string& kmer, bool dev) {
@@ -152,44 +156,56 @@ float shannon_entropy_dimer(std::string_view s) {
 }
 
 
-std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(
+void get_all_methylation_kmers(
     const std::string& seq,
     unsigned k,
     const btllib::BloomFilter& clean_ct_mers,
-    const btllib::BloomFilter& clean_ga_mers//, const float shannon,  const float shannon2,  const float shannon3, const std::string&  qual,int phred_threshold
+    const btllib::BloomFilter& clean_ga_mers,//, const float shannon,  const float shannon2,  const float shannon3, const std::string&  qual,int phred_threshold
+    std::vector<uint8_t>& final_bf,
+    std::vector<uint8_t>& final_meth_bf,
+    std::unordered_map<uint64_t, size_t>& hash_to_loc_map
 ) {
     
-    std::vector<std::pair<uint64_t, bool>> all_kmers_hash;
+    //std::vector<std::pair<uint64_t, bool>> all_kmers_hash;
     btllib::BsHashDirectional bh(seq, 1, k, "CT"); 
     btllib::BsHashDirectional bh_ga(seq, 1, k, "GA"); 
     while (bh.roll() && bh_ga.roll()) { 
-        bool is_methylated = false;
         auto central_dimer = bh.center_dimer();
-        if (central_dimer == "TG" || central_dimer == "CG" || central_dimer == "CA") {
+        //if (central_dimer == "TG" || central_dimer == "CG" || central_dimer == "CA") {
             if (central_dimer == "CG") {
-                is_methylated = true; // double check it exists here, if not flag kmer and hash, add entropy and kmer check
                 if (clean_ct_mers.contains(bh.hashes())) { 
-                    all_kmers_hash.push_back(std::make_pair(bh.hashes()[0], is_methylated));
+                    //all_kmers_hash.push_back(std::make_pair(bh.hashes()[0], is_methylated));
+                    size_t idx = hash_to_loc_map[bh.hashes()[0] % (3000000000ULL * 8)];
+                    final_bf[idx] = 1;
+                    final_meth_bf[idx] = 1;
+
                 }
                 if (clean_ga_mers.contains(bh_ga.hashes())) { 
-                    all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
+                    //all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
+                    size_t idx = hash_to_loc_map[bh_ga.hashes()[0] % (3000000000ULL * 8)];
+                    final_bf[idx] = 1;
+                    final_meth_bf[idx] = 1;
                 } else {
                     continue;
                 }
             } 
             if (central_dimer == "TG") {
                 if (clean_ct_mers.contains(bh.hashes())) { 
-                    all_kmers_hash.push_back(std::make_pair(bh.hashes()[0], is_methylated));
+                    //all_kmers_hash.push_back(std::make_pair(bh.hashes()[0], is_methylated));
+                    size_t idx = hash_to_loc_map[bh.hashes()[0] % (3000000000ULL * 8)];
+                    final_bf[idx] = 1;
                 }
             } 
             if (central_dimer == "CA") {
                 if (clean_ga_mers.contains(bh_ga.hashes())) { 
-                    all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
+                    //all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
+                    size_t idx = hash_to_loc_map[bh_ga.hashes()[0] % (3000000000ULL * 8)];
+                    final_bf[idx] = 1;
                 }
             } 
-	    }
+	    //}
     }
-    return all_kmers_hash;
+
 }
 
 void export_matrices(const std::vector<std::vector<uint8_t>>& bfs1, 
@@ -489,8 +505,8 @@ std::cerr << "making methylated kmers dataset" << std::endl;
 //std::unordered_set<uint64_t> methylated_kmers_in_dataset;
 //uint64_t max_size = max_size;
 uint64_t max_size = 3000000000ULL;
-btllib::BloomFilter prelim_ct_mers(max_size, 1);
-btllib::BloomFilter prelim_ga_mers(max_size, 1);
+//btllib::BloomFilter prelim_ct_mers(max_size, 1);
+//btllib::BloomFilter prelim_ga_mers(max_size, 1);
 btllib::BloomFilter clean_ct_mers(max_size, 1);
 btllib::BloomFilter clean_ga_mers(max_size, 1);
 btllib::BloomFilter methylated_kmers_in_dataset(max_size, 1);
@@ -505,6 +521,7 @@ int num_lines_2 = 0;
 /*std::ofstream methy_kmer_log("methylated_kmers_with_phred.tsv");
 methy_kmer_log << "error_rate\n";  //
 */
+auto first_pass_start = Clock::now();
 std::vector<std::string> sample_names;
 for (const auto& [prefix, pair] : pairs) {
     const auto& r1_file = pair.first;
@@ -630,7 +647,12 @@ assert(center_from_kmer == central_dimer);
         }
     }
 }
-
+auto first_pass_end = Clock::now();
+    double seconds =
+        std::chrono::duration_cast<std::chrono::duration<double>>(first_pass_end - first_pass_start).count();
+    std::cerr << "[TIMER] First pass"
+              << " processed in " << seconds << " s\n";
+auto second_pass_start = Clock::now();
 std::cerr << "2nd pass" << std::endl;
 for (const auto& [prefix, pair] : pairs) {
     const auto& r1_file = pair.first;
@@ -655,45 +677,19 @@ btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
         btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
         btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
         while(bh.roll() && bh_ga.roll()) {
-            size_t  j = bh.get_pos();
 
             auto central_dimer = bh.center_dimer();
-            if (central_dimer == "CG") {
-
-                bool pass_quality = true;
-                double total_error_prob = 0.0;
-
-                for (size_t m = 0; m < k; ++m) {
-                    int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
-                    double error_prob = std::pow(10.0, -phred / 10.0);
-                    total_error_prob += error_prob;
-                }
-
-                double avg_error_prob = total_error_prob / k;
-                double avg_phred_score = -10.0 * std::log10(avg_error_prob);
-
-                if (avg_phred_score < phred_threshold) {
-                    pass_quality = false;
-                }
-                if (!pass_quality) continue;
-
-                std::string_view orig_kmer{record.seq.data() + j, k};
-size_t num_dimers = k / 2;
-size_t center_dimer = num_dimers / 2;
-size_t center_pos = center_dimer * 2;
-
-std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
-assert(center_from_kmer == central_dimer);
-                if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
-                    continue;
-                }
-                if (error_kmer_ct.contains(bh.hashes()) > minKmer && error_kmer_ct.contains(bh.hashes()) < maxKmer) {
-                    prelim_ct_mers.insert(bh.hashes());
-
-                }
-                if (error_kmer_ga.contains(bh_ga.hashes()) > minKmer && error_kmer_ga.contains(bh_ga.hashes()) < maxKmer) {
-                   prelim_ga_mers.insert(bh_ga.hashes());
-                }
+            if (central_dimer == "TG") {
+                    if (error_kmer_ct.contains(bh.hashes()) > minKmer && error_kmer_ct.contains(bh.hashes()) < maxKmer) {
+                        clean_ct_mers.insert(bh.hashes());
+                        methylated_kmers_in_dataset.insert(bh.hashes());
+                    }
+            }
+            if(central_dimer == "CA"){
+                    if (error_kmer_ga.contains(bh_ga.hashes()) > minKmer && error_kmer_ga.contains(bh_ga.hashes()) < maxKmer) {
+                        clean_ga_mers.insert(bh_ga.hashes());
+                        methylated_kmers_in_dataset.insert(bh_ga.hashes());
+                    }
             }
         }
     }
@@ -713,49 +709,31 @@ assert(center_from_kmer == central_dimer);
             btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
             btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
             while(bh.roll() && bh_ga.roll()) {
-                size_t j = bh.get_pos();
             auto central_dimer = bh.center_dimer();
-            if (central_dimer == "CG") {
-                    bool pass_quality = true;
-                    double total_error_prob = 0.0;
-
-                    for (size_t m = 0; m < k; ++m) {
-                        int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
-                        double error_prob = std::pow(10.0, -phred / 10.0);
-                        total_error_prob += error_prob;
-                    }
-
-                    double avg_error_prob = total_error_prob / k;
-                    double avg_phred_score = -10.0 * std::log10(avg_error_prob);
-
-                    if (avg_phred_score < phred_threshold) {
-                        pass_quality = false;
-                    }
-                    if (!pass_quality) continue;
-                    std::string_view orig_kmer{record.seq.data() + j, k};
-                    size_t num_dimers = k / 2;
-                    size_t center_dimer = num_dimers / 2;
-                    size_t center_pos = center_dimer * 2;
-
-                    std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
-                    assert(center_from_kmer == central_dimer);
-                    if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
-                        continue;
-                    }
-                    if (error_kmer_ct.contains(bh.hashes()) > minKmer && error_kmer_ct.contains(bh.hashes()) < maxKmer) {
-                        prelim_ct_mers.insert(bh.hashes());
-                    }
-                    if (error_kmer_ga.contains(bh_ga.hashes()) > minKmer && error_kmer_ga.contains(bh_ga.hashes()) < maxKmer) {
-                        prelim_ga_mers.insert(bh_ga.hashes());
-                    }
+                if (central_dimer == "TG") {
+                        if (error_kmer_ct.contains(bh.hashes()) > minKmer && error_kmer_ct.contains(bh.hashes()) < maxKmer) {
+                            clean_ct_mers.insert(bh.hashes());
+                            methylated_kmers_in_dataset.insert(bh.hashes());
+                        }
+                }
+                if(central_dimer == "CA"){
+                        if (error_kmer_ga.contains(bh_ga.hashes()) > minKmer && error_kmer_ga.contains(bh_ga.hashes()) < maxKmer) {
+                            clean_ga_mers.insert(bh_ga.hashes());
+                            methylated_kmers_in_dataset.insert(bh_ga.hashes());
+                        }
                 }
             }
         }
     }
 }
+auto second_pass_end = Clock::now();
+seconds =
+    std::chrono::duration_cast<std::chrono::duration<double>>(second_pass_end - second_pass_start).count();
+std::cerr << "[TIMER] Second pass"
+            << " processed in " << seconds << " s\n";
 
-
-std::cerr << "3rd pass" << std::endl;
+/*std::cerr << "3rd pass" << std::endl;
+auto third_pass_start = Clock::now();
 for (const auto& [prefix, pair] : pairs) {
     const auto& r1_file = pair.first;
     const auto& r2_file = pair.second;
@@ -829,10 +807,13 @@ for (const auto& [prefix, pair] : pairs) {
     }
 }
 
+auto third_pass_end = Clock::now();
+seconds =
+    std::chrono::duration_cast<std::chrono::duration<double>>(third_pass_end - third_pass_start).count();
+std::cerr << "[TIMER] third pass"
+            << " processed in " << seconds << " s\n";*/
 
 
-
-std::unordered_map<uint64_t, size_t> hash_to_loc_map;
 
 /*std::atomic<size_t> all_bfSize(0);
 
@@ -845,6 +826,9 @@ for (uint64_t i = 0; i < max_size * 8; ++i) {
 
 std::cerr << "all_bfSize: " <<  all_bfSize <<std::endl;*/
 
+std::unordered_map<uint64_t, size_t> hash_to_loc_map;
+
+auto mapping_start = Clock::now();
 std::cerr << "Mapping Bloom Filter" << std::endl;
 std::atomic<size_t> bfSize(0);
 
@@ -858,12 +842,18 @@ for (uint64_t i = 0; i < max_size * 8; ++i) {
         }
     }
 }
+auto mapping_end = Clock::now();
+seconds =
+    std::chrono::duration_cast<std::chrono::duration<double>>(mapping_end - mapping_start).count();
+std::cerr << "[TIMER] mapping bloom filters"
+            << " processed in " << seconds << " s\n";
 std::unordered_map<uint64_t, std::pair<double, double>> kmer_counts;
 std::mutex kmer_mutex;
 std::cerr << "bfSize: " <<  bfSize <<std::endl;
 std::cerr << "making bit vector" << std::endl;
 int num_lines = 0;
 //omp_set_num_threads(1);
+auto making_vector_start = Clock::now();
 for (const auto& [prefix, pair] : pairs) {
     const auto& r1_file = pair.first;
     const auto& r2_file = pair.second;
@@ -891,13 +881,13 @@ for (const auto& [prefix, pair] : pairs) {
         std::vector<std::pair<uint64_t, bool>> all_kmers;
 //#pragma omp critical
 //{
-        all_kmers =
-            get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers);//, shannon, shannon2, shannon3, record.qual, phred_threshold);
+        //all_kmers =
+            get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers, final_bf, final_meth_bf, hash_to_loc_map);//, shannon, shannon2, shannon3, record.qual, phred_threshold);
 //}
 
         //std::cerr << "Done checking get all meth" <<  std::endl;
 
-        for (const auto& kmer : all_kmers) {
+        /*for (const auto& kmer : all_kmers) {
             //std::cerr << "Mapping kmer to hash" <<  std::endl;
             size_t idx = hash_to_loc_map[kmer.first % (max_size * 8)];
             //std::cerr << "Mapped" <<  std::endl;
@@ -918,7 +908,7 @@ for (const auto& [prefix, pair] : pairs) {
                     counts.first += 1.0;   // unmethylated
                 }
             }
-        }
+        }*/
         //std::cerr << "Inserted checking get all meth" <<  std::endl;
     }
 
@@ -935,11 +925,11 @@ for (const auto& [prefix, pair] : pairs) {
         std::vector<std::pair<uint64_t, bool>> all_kmers;
 //#pragma omp critical
 //{
-        all_kmers =
-                get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers);//, shannon, shannon2, shannon3, record.qual, phred_threshold);
+        //all_kmers =
+                get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers, final_bf, final_meth_bf, hash_to_loc_map);
 //}
 
-            for (const auto& kmer : all_kmers) {
+            /*for (const auto& kmer : all_kmers) {
                 size_t idx = hash_to_loc_map[kmer.first % (max_size * 8)];
                 final_bf[idx] = 1;
                 if (kmer.second) {
@@ -958,15 +948,19 @@ for (const auto& [prefix, pair] : pairs) {
                         counts.first += 1.0;   // unmethylated
                     }
                 }
-            }
+            }*/
         }
     }
 
     bfs1.emplace_back(std::move(final_bf));
     methylated_bfs1.emplace_back(std::move(final_meth_bf));
 }
-
-double total_occurrences = 0.0;
+auto making_vector_end = Clock::now();
+seconds =
+    std::chrono::duration_cast<std::chrono::duration<double>>(making_vector_end - making_vector_start).count();
+std::cerr << "[TIMER] making vector"
+            << " processed in " << seconds << " s\n";
+/*double total_occurrences = 0.0;
 
 // Step 1: Sum total counts across all k-mers
 for (const auto& [_, counts] : kmer_counts) {
@@ -994,7 +988,7 @@ for (auto& [key, counts] : kmer_counts) {
         counts.first = 0.0;
         counts.second = 0.0;
     }
-}
+}*/
 // compute the Jaccard similarity between the two sets of k-mers in bfs1 against itself
 // increase intersection only when both are 1
 
