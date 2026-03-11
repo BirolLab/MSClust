@@ -24,7 +24,43 @@
 #include <regex>
 #include <filesystem>
 
+
 namespace fs = std::filesystem;
+
+
+double calculate_c_percentage(const std::string& read_seq) {
+    if (read_seq.empty()) return 0.0;
+
+    size_t c_count = 0;
+    size_t g_count = 0;
+
+    for (char base : read_seq) {
+        if (base == 'C') {
+            c_count++;
+        } else if (base == 'G') {
+            g_count++;
+        }
+    }
+
+    size_t effective_c_count = 0;
+
+    // Apply the 2:1 ratio logic
+    if (g_count >= 2 * c_count) {
+        // BS Forward: Use C count as is
+        effective_c_count = c_count;
+    } 
+    else if (c_count >= 2 * g_count) {
+        // BS Reverse: We need the RC. In the RC, every G becomes a C.
+        // Instead of actually flipping the string, we just take the G count.
+        effective_c_count = g_count;
+    } 
+    else {
+        // cDNA: Use C count as is
+        effective_c_count = 1000;
+    }
+
+    return (static_cast<double>(effective_c_count) / read_seq.length()) * 100.0;
+}
 
 // --- Logarithmic Quality Averaging ---
 double calculate_avg_phred(const std::string& qual) {
@@ -325,6 +361,15 @@ int main(int argc, char* argv[]) {
         .implicit_value(true)
         .help("calculate complexity (default is false)");
 
+        program.add_argument("-x","--nome")
+        .default_value(false)
+        .implicit_value(true)
+        .help("nome seq (default is false)");
+        program.add_argument("-r","--rna")
+        .default_value(false)
+        .implicit_value(true)
+        .help("rna in reads (default is false)");
+
 
     try {
         program.parse_args(argc, argv);
@@ -339,6 +384,8 @@ int main(int argc, char* argv[]) {
     std::string prefix = program.get<std::string>("-o");
     bool dev = program.get<bool>("-d");
     bool complexity = program.get<bool>("-c");
+    bool nome_seq = program.get<bool>("-x");
+    bool rna = program.get<bool>("-r");
     int numThreads = program.get<int>("-t");
     float shannon = program.get<float>("-s");
     float shannon2 = program.get<float>("--s2");
@@ -354,6 +401,7 @@ omp_set_num_threads(numThreads);
     std::cout << "Output prefix: " << prefix << "\n";
     std::cout << "Development mode: " << (dev ? "enabled" : "disabled") << "\n";
     std::cout << "Complexity filtering: " << (complexity ? "enabled" : "disabled") << "\n";
+    std::cout << "nome seq: " << (nome_seq ? "enabled" : "disabled") << "\n";
     std::cout << "Shannon entropy threshold: " << shannon << "\n";
     std::cout << "Dimer Shannon entropy threshold: " << shannon2 << "\n";
     std::cout << "Trimer Shannon entropy threshold: " << shannon3 << "\n";
@@ -528,16 +576,33 @@ for (const auto& [prefix, pair] : pairs) {
         if (calculate_avg_phred(record.qual) < 20) {
             continue;
         }
+        if (rna && calculate_c_percentage(record.seq) >6) {
+            continue;
+        }
 
         btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
         btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
         while(bh.roll() && bh_ga.roll()) {
             
             size_t  j = bh.get_pos();
-            std::string_view kmer{record.seq.data() + j, k};
+            //std::string_view kmer{record.seq.data() + j, k};
 
             auto central_dimer = bh.center_dimer();
             if (central_dimer == "CG") {
+                //size_t num_dimers = k / 2;
+                //size_t center_dimer = num_dimers / 2;
+                //size_t center_pos = center_dimer * 2;
+                const size_t cg_pos = j + (k / 2) - 1;  // position of 'C' in central "CG"
+
+                const bool has_g_before_cg =
+                    (cg_pos > 0) && (record.seq[cg_pos - 1] == 'G');
+
+                const bool has_c_after_cg =
+                    (cg_pos + 2 < record.seq.size()) &&
+                    (record.seq[cg_pos + 2] == 'C');
+                if (nome_seq && has_c_after_cg && has_g_before_cg) {
+                    continue;
+                }
                 bool pass_quality = true;
                 double total_error_prob = 0.0;
 
@@ -556,18 +621,29 @@ for (const auto& [prefix, pair] : pairs) {
                 }
                 if (!pass_quality) continue;
                 std::string_view orig_kmer{record.seq.data() + j, k};
-size_t num_dimers = k / 2;
-size_t center_dimer = num_dimers / 2;
-size_t center_pos = center_dimer * 2;
 
-std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
-assert(center_from_kmer == central_dimer);
+
+//std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
+//assert(center_from_kmer == central_dimer);
                 if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
                     continue;
                 }
+                if (nome_seq) {
+                    if (!has_g_before_cg) {
+                        error_kmer_ct.insert(bh.hashes());
+                    }
+                }  else {
+                    error_kmer_ct.insert(bh.hashes());
+                }
+                if (nome_seq) {
+                    if (!has_c_after_cg) {
+                        error_kmer_ga.insert(bh_ga.hashes());
+                    }
 
-                error_kmer_ct.insert(bh.hashes());
-                error_kmer_ga.insert(bh_ga.hashes());
+                }  else {
+                    error_kmer_ga.insert(bh_ga.hashes());
+                }
+                
               
             }
         }
@@ -585,6 +661,9 @@ assert(center_from_kmer == central_dimer);
             if (calculate_avg_phred(record.qual) < 20) {
                 continue;
             }
+        if (rna && calculate_c_percentage(record.seq) >6) {
+            continue;
+        }
 
             btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
             btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
@@ -594,6 +673,17 @@ assert(center_from_kmer == central_dimer);
 
             auto central_dimer = bh.center_dimer();
             if (central_dimer == "CG") {
+                const size_t cg_pos = j + (k / 2) - 1;  // position of 'C' in central "CG"
+
+                const bool has_g_before_cg =
+                    (cg_pos > 0) && (record.seq[cg_pos - 1] == 'G');
+
+                const bool has_c_after_cg =
+                    (cg_pos + 2 < record.seq.size()) &&
+                    (record.seq[cg_pos + 2] == 'C');
+                if (nome_seq && has_c_after_cg && has_g_before_cg) {
+                    continue;
+                }
                     bool pass_quality = true;
                     double total_error_prob = 0.0;
 
@@ -622,8 +712,21 @@ assert(center_from_kmer == central_dimer);
                         continue;
                     }
 
-                    error_kmer_ct.insert(bh.hashes());
-                    error_kmer_ga.insert(bh_ga.hashes());
+                    if (nome_seq) {
+                        if (!has_g_before_cg) {
+                            error_kmer_ct.insert(bh.hashes());
+                        }
+                    }  else {
+                        error_kmer_ct.insert(bh.hashes());
+                    }
+                    if (nome_seq) {
+                        if (!has_c_after_cg) {
+                            error_kmer_ga.insert(bh_ga.hashes());
+                        }
+
+                    }  else {
+                        error_kmer_ga.insert(bh_ga.hashes());
+                    }
                     
                 }
             }
@@ -649,6 +752,9 @@ btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
             continue;
         }
         if (calculate_avg_phred(record.qual) < 20) {
+            continue;
+        }
+        if (calculate_c_percentage(record.seq) >6) {
             continue;
         }
 
@@ -710,6 +816,9 @@ assert(center_from_kmer == central_dimer);
             if (calculate_avg_phred(record.qual) < 20) {
                 continue;
             }
+        if (calculate_c_percentage(record.seq) >6) {
+            continue;
+        }
             btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
             btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
             while(bh.roll() && bh_ga.roll()) {
@@ -775,6 +884,9 @@ for (const auto& [prefix, pair] : pairs) {
         if (calculate_avg_phred(record.qual) < 20) {
             continue;
         }
+        if (calculate_c_percentage(record.seq) >6) {
+            continue;
+        }
 
         btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
         btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
@@ -807,6 +919,9 @@ for (const auto& [prefix, pair] : pairs) {
             if (calculate_avg_phred(record.qual) < 20) {
                 continue;
             }
+        if (calculate_c_percentage(record.seq) >6) {
+            continue;
+        }
             btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
             btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
             while(bh.roll() && bh_ga.roll()) {
@@ -887,6 +1002,12 @@ for (const auto& [prefix, pair] : pairs) {
             if (record.seq.size() < k) {
                 continue;
             }
+        if (calculate_c_percentage(record.seq) >6) {
+            continue;
+        }
+            if (calculate_avg_phred(record.qual) < 20) {
+                continue;
+            }
         //std::cerr << "checking get all meth" <<  std::endl;
         std::vector<std::pair<uint64_t, bool>> all_kmers;
 //#pragma omp critical
@@ -932,6 +1053,12 @@ for (const auto& [prefix, pair] : pairs) {
             if (record.seq.size() < k) {
                 continue;
             }
+            if (calculate_avg_phred(record.qual) < 20) {
+                continue;
+            }
+        if (calculate_c_percentage(record.seq) >6) {
+            continue;
+        }
         std::vector<std::pair<uint64_t, bool>> all_kmers;
 //#pragma omp critical
 //{
