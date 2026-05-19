@@ -12,6 +12,11 @@
 #include <unordered_set>
 #include <vector>
 #include <argparse/argparse.hpp>
+#include <zlib.h>
+#include "kseq.h"
+
+#include <chrono>
+#include <cstdio> // For std::remove
 
 #include "btllib/bloom_filter.hpp"
 #include "btllib/counting_bloom_filter.hpp"
@@ -24,7 +29,7 @@
 #include <regex>
 #include <filesystem>
 
-
+KSEQ_INIT(gzFile, gzread)
 namespace fs = std::filesystem;
 
 
@@ -301,6 +306,111 @@ void export_matrices(const std::vector<std::vector<uint8_t>>& bfs1,
     for (auto& f : files) f.close();
 }
 
+void export_matrices(const std::vector<std::string>& bf_filenames, 
+                     const std::vector<std::string>& meth_filenames, 
+                     const std::vector<size_t>& final_indices,
+                     const std::vector<std::string>& sample_names,
+                     bool dev) {
+    
+    size_t numSamples = bf_filenames.size();
+    std::vector<size_t> cuts = {2000000, 5000000, 10000000, 20000000};
+    std::vector<std::ofstream> files(cuts.size());
+    
+    for (size_t f = 0; f < cuts.size(); ++f) {
+        size_t actual_cut = std::min(cuts[f], final_indices.size());
+        files[f].open("methylation_top_" + std::to_string(actual_cut) + ".csv");
+        
+        // Header: Add "Sample_ID" as the first column
+        files[f] << "Sample_ID";
+        for (size_t j = 0; j < actual_cut; ++j) {
+            files[f] << ",Site_" << final_indices[j];
+        }
+        files[f] << "\n";
+    }
+
+    for (size_t i = 0; i < numSamples; ++i) {
+        // Load the existence bitvector from disk
+        std::ifstream bf_in(bf_filenames[i], std::ios::binary | std::ios::ate);
+        if (!bf_in) {
+            std::cerr << "Error opening " << bf_filenames[i] << "\n";
+            continue;
+        }
+        std::streamsize bf_size = bf_in.tellg();
+        bf_in.seekg(0, std::ios::beg);
+        std::vector<uint8_t> sample_bf(bf_size);
+        bf_in.read(reinterpret_cast<char*>(sample_bf.data()), bf_size);
+        bf_in.close();
+
+        // Load the methylation bitvector from disk
+        std::ifstream meth_in(meth_filenames[i], std::ios::binary | std::ios::ate);
+        if (!meth_in) {
+            std::cerr << "Error opening " << meth_filenames[i] << "\n";
+            continue;
+        }
+        std::streamsize meth_size = meth_in.tellg();
+        meth_in.seekg(0, std::ios::beg);
+        std::vector<uint8_t> sample_meth_bf(meth_size);
+        meth_in.read(reinterpret_cast<char*>(sample_meth_bf.data()), meth_size);
+        meth_in.close();
+
+        // --- START OF YOUR NAME CLEANING LOGIC ---
+        std::string raw_name = sample_names[i];
+        std::string clean_name;
+
+        if (dev) {
+            size_t pos = raw_name.find("GSM");
+            size_t pos2 = raw_name.find("_aligned_reads.fasta");
+            if (pos != std::string::npos && pos2 != std::string::npos)
+                clean_name = raw_name.substr(pos, pos2 - pos);
+            else
+                clean_name = raw_name;
+        } else {
+            size_t pos = raw_name.find_last_of("/");
+            size_t pos2 = raw_name.find_first_of(".fq");
+            if (pos2 == std::string::npos) pos2 = raw_name.find_first_of(".fastq");
+            
+            size_t start = (pos == std::string::npos) ? 0 : pos + 1;
+            if (pos2 != std::string::npos && pos2 > start)
+                clean_name = raw_name.substr(start, pos2 - start);
+            else
+                clean_name = raw_name.substr(start);
+        }
+        // --- END OF NAME CLEANING LOGIC ---
+
+        // Prepare the row data
+        std::vector<int> sample_row(final_indices.size());
+        
+        #pragma omp parallel for schedule(static)
+        for (size_t j = 0; j < final_indices.size(); ++j) {
+            size_t site_idx = final_indices[j];
+            
+            // Bounds check safeguard
+            if (site_idx < sample_bf.size()) {
+                if (sample_bf[site_idx] == 0) {
+                    sample_row[j] = 0;
+                } else {
+                    sample_row[j] = (sample_meth_bf[site_idx] == 1) ? 1 : -1;
+                }
+            } else {
+                sample_row[j] = 0;
+            }
+        }
+
+        // Write to files
+        for (size_t f = 0; f < cuts.size(); ++f) {
+            size_t actual_cut = std::min(cuts[f], final_indices.size());
+            files[f] << clean_name; // Prepend Sample Name
+            for (size_t j = 0; j < actual_cut; ++j) {
+                files[f] << "," << sample_row[j];
+            }
+            files[f] << "\n";
+        }
+    } // Vectors sample_bf and sample_meth_bf safely fall out of scope here and are destroyed
+
+    for (auto& f : files) f.close();
+}
+
+
 int main(int argc, char* argv[]) {
     argparse::ArgumentParser program("example");
 
@@ -407,6 +517,7 @@ omp_set_num_threads(numThreads);
     std::cout << "Trimer Shannon entropy threshold: " << shannon3 << "\n";
     std::cout << "Phred avg threshold: " << phred_threshold << "\n";
     std::cout << "k-mer size : " << k << "\n";
+    std::cout << "threads : " << numThreads << "\n";
     std::cout << "Minimum k-mer occurence: " << minKmer << "\n";
     std::cout << "Maximum k-mer occurence: " << maxKmer << "\n";
 
@@ -457,7 +568,7 @@ omp_set_num_threads(numThreads);
             std::cerr << num_lines_2 << std::endl;
             num_lines_2++;
 
-            btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
+            btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
 
 
             #pragma omp parallel
@@ -490,7 +601,7 @@ omp_set_num_threads(numThreads);
                 }
             }
             if (!pair.second.empty()) {
-                btllib::SeqReader reader2(r2_file, btllib::SeqReader::Flag::SHORT_MODE);
+                btllib::SeqReader reader2(r2_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
 
 
                 #pragma omp parallel
@@ -550,9 +661,31 @@ btllib::CountingBloomFilter8 error_kmer_ga(max_size, 3);
 
 int num_lines_2 = 0;
 
-/*std::ofstream methy_kmer_log("methylated_kmers_with_phred.tsv");
-methy_kmer_log << "error_rate\n";  //
-*/
+
+std::vector<std::string> sample_names;
+//std::atomic<size_t> total_bases{0}; // Prevents the compiler from optimizing the loop away
+
+// Initialize kseq for gzFile (works for both plain text and .gz files)
+
+
+// ... assuming pairs and num_lines_2 exist above ...
+
+
+
+// Spawn a massive pool of 48 worker threads
+struct Job {
+    std::string prefix;
+    std::string r1_file;
+    std::string r2_file;
+};
+
+
+std::vector<Job> flat_jobs;
+for (const auto& [prefix, pair] : pairs) {
+    flat_jobs.push_back({prefix, pair.first, pair.second});
+}
+
+
 std::vector<std::string> sample_names;
 for (const auto& [prefix, pair] : pairs) {
     const auto& r1_file = pair.first;
@@ -734,6 +867,7 @@ assert(center_from_kmer == central_dimer);
     }
 }
 
+
 std::cerr << "2nd pass" << std::endl;
 for (const auto& [prefix, pair] : pairs) {
     const auto& r1_file = pair.first;
@@ -743,7 +877,7 @@ for (const auto& [prefix, pair] : pairs) {
     std::cerr << num_lines_2 << std::endl;
     num_lines_2++;
 
-btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
+btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
 
 
 #pragma omp parallel
@@ -805,7 +939,7 @@ assert(center_from_kmer == central_dimer);
     }
 
     if (!pair.second.empty()) {
-        btllib::SeqReader reader2(r2_file, btllib::SeqReader::Flag::SHORT_MODE);
+        btllib::SeqReader reader2(r2_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
 
 
     #pragma omp parallel
@@ -873,7 +1007,7 @@ for (const auto& [prefix, pair] : pairs) {
     std::cerr << num_lines_2 << std::endl;
     num_lines_2++;
 
-    btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
+    btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
 
 
 #pragma omp parallel
@@ -908,7 +1042,7 @@ for (const auto& [prefix, pair] : pairs) {
     }
 
     if (!pair.second.empty()) {
-        btllib::SeqReader reader2(r2_file, btllib::SeqReader::Flag::SHORT_MODE);
+        btllib::SeqReader reader2(r2_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
 
 
     #pragma omp parallel
@@ -978,50 +1112,43 @@ std::mutex kmer_mutex;
 std::cerr << "bfSize: " <<  bfSize <<std::endl;
 std::cerr << "making bit vector" << std::endl;
 int num_lines = 0;
-//omp_set_num_threads(1);
+
+// Auxiliary data structures to track metrics needed for Shannon entropy across all samples
+std::vector<uint32_t> global_unmeth_counts(bfSize, 0);
+std::vector<uint32_t> global_meth_counts(bfSize, 0);
+
+// Track filenames to pass into the export function later
+std::vector<std::string> bf_filenames;
+std::vector<std::string> meth_filenames;
+
 for (const auto& [prefix, pair] : pairs) {
     const auto& r1_file = pair.first;
     const auto& r2_file = pair.second;
 
-
     std::cerr << "reading line " << num_lines++ << std::endl;
-
-    /*std::vector<btllib::SeqReader::Record> records;
-    for (const auto& record : btllib::SeqReader(line1, btllib::SeqReader::Flag::SHORT_MODE | btllib::SeqReader::Flag::FOLD_CASE)) {
-        records.push_back(record);
-    }*/
 
     std::vector<uint8_t> final_bf(bfSize, 0);
     std::vector<uint8_t> final_meth_bf(bfSize, 0);
 
-    btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
-//two pass
+    btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
 
-#pragma omp parallel
+    #pragma omp parallel
     for (const auto record : reader) {
-            if (record.seq.size() < k) {
-                continue;
-            }
-        if (calculate_c_percentage(record.seq) >6) {
+        if (record.seq.size() < k) {
             continue;
         }
-            if (calculate_avg_phred(record.qual) < 20) {
-                continue;
-            }
-        //std::cerr << "checking get all meth" <<  std::endl;
-        std::vector<std::pair<uint64_t, bool>> all_kmers;
-//#pragma omp critical
-//{
-        all_kmers =
-            get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers);//, shannon, shannon2, shannon3, record.qual, phred_threshold);
-//}
+        if (calculate_c_percentage(record.seq) > 6) {
+            continue;
+        }
+        if (calculate_avg_phred(record.qual) < 20) {
+            continue;
+        }
 
-        //std::cerr << "Done checking get all meth" <<  std::endl;
+        std::vector<std::pair<uint64_t, bool>> all_kmers;
+        all_kmers = get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers);
 
         for (const auto& kmer : all_kmers) {
-            //std::cerr << "Mapping kmer to hash" <<  std::endl;
             size_t idx = hash_to_loc_map[kmer.first % (max_size * 8)];
-            //std::cerr << "Mapped" <<  std::endl;
             final_bf[idx] = 1;
             if (kmer.second) {
                 final_meth_bf[idx] = 1;
@@ -1040,15 +1167,13 @@ for (const auto& [prefix, pair] : pairs) {
                 }
             }
         }
-        //std::cerr << "Inserted checking get all meth" <<  std::endl;
     }
 
     if (!pair.second.empty()) {
         std::cerr << "read2" << std::endl;
-        btllib::SeqReader reader2(r2_file, btllib::SeqReader::Flag::SHORT_MODE);
-    //two pass
+        btllib::SeqReader reader2(r2_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
 
-    #pragma omp parallel
+        #pragma omp parallel
         for (const auto record : reader2) {
             if (record.seq.size() < k) {
                 continue;
@@ -1056,15 +1181,12 @@ for (const auto& [prefix, pair] : pairs) {
             if (calculate_avg_phred(record.qual) < 20) {
                 continue;
             }
-        if (calculate_c_percentage(record.seq) >6) {
-            continue;
-        }
-        std::vector<std::pair<uint64_t, bool>> all_kmers;
-//#pragma omp critical
-//{
-        all_kmers =
-                get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers);//, shannon, shannon2, shannon3, record.qual, phred_threshold);
-//}
+            if (calculate_c_percentage(record.seq) > 6) {
+                continue;
+            }
+
+            std::vector<std::pair<uint64_t, bool>> all_kmers;
+            all_kmers = get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers);
 
             for (const auto& kmer : all_kmers) {
                 size_t idx = hash_to_loc_map[kmer.first % (max_size * 8)];
@@ -1089,8 +1211,35 @@ for (const auto& [prefix, pair] : pairs) {
         }
     }
 
-    bfs1.emplace_back(std::move(final_bf));
-    methylated_bfs1.emplace_back(std::move(final_meth_bf));
+    // --- Update Auxiliary Structures for Entropy ---
+    #pragma omp parallel for schedule(static)
+    for (size_t i = 0; i < bfSize; ++i) {
+        if (final_bf[i] == 1) {
+            if (final_meth_bf[i] == 1) {
+                // Safe because each thread is operating on a unique index 'i'
+                global_meth_counts[i]++;
+            } else {
+                global_unmeth_counts[i]++;
+            }
+        }
+    }
+
+    // --- Save Vectors to Disk ---
+    std::string bf_file = prefix + "_bf.bin";
+    std::string meth_file = prefix + "_meth.bin";
+
+    std::ofstream bf_out(bf_file, std::ios::binary);
+    bf_out.write(reinterpret_cast<const char*>(final_bf.data()), final_bf.size());
+    bf_out.close();
+
+    std::ofstream meth_out(meth_file, std::ios::binary);
+    meth_out.write(reinterpret_cast<const char*>(final_meth_bf.data()), final_meth_bf.size());
+    meth_out.close();
+
+    bf_filenames.push_back(bf_file);
+    meth_filenames.push_back(meth_file);
+
+    // final_bf and final_meth_bf are automatically destroyed here, freeing RAM
 }
 
 double total_occurrences = 0.0;
@@ -1122,65 +1271,29 @@ for (auto& [key, counts] : kmer_counts) {
         counts.second = 0.0;
     }
 }
-// compute the Jaccard similarity between the two sets of k-mers in bfs1 against itself
-// increase intersection only when both are 1
-
-/*for (int i = 0; i < bfs1.size(); ++i) {
-    for (int j = i + 1; j < bfs1.size(); ++j) {
-        int intersection = 0;
-        int union_size = 0;
-        for (int k = 0; k < bfSize; ++k) {
-            if (bfs1[i][k] == 1 && bfs1[j][k] == 1) {
-                ++intersection;
-            }
-            if (bfs1[i][k] == 1 || bfs1[j][k] == 1) {
-                ++union_size;
-            }
-        }
-        double jaccard = static_cast<double>(intersection) / union_size;
-        std::cout << "Jaccard similarity between " << i << " and " << j << ": " << jaccard << "\n";
-    }
-}*/
 
 std::cerr << "calculating stats" << std::endl;
 std::cerr << "using tf inverse" << std::endl;
-// --- keep your includes and existing code ---
 
-// After you finish filling bfs1 and methylated_bfs1 vectors and bfSize is set:
-
-
-std::ofstream output_hamming(prefix + "hamming.tsv");
-std::ofstream output_cosine(prefix + "cosine.tsv");
-std::ofstream output_pearson(prefix + "pearson.tsv");
+std::ofstream output_hamming("hamming.tsv");
+std::ofstream output_cosine("cosine.tsv");
+std::ofstream output_pearson("pearson.tsv");
 
 if (!output_hamming.is_open() || !output_cosine.is_open() || !output_pearson.is_open()) {
     std::cerr << "Unable to open output file(s)\n";
     return 1;
 }
 
-size_t numSamples = bfs1.size();
-std::vector<std::atomic<uint32_t>> site_counts(bfSize);
-for (size_t k = 0; k < bfSize; ++k) site_counts[k].store(0);
-
-#pragma omp parallel for schedule(dynamic)
-for (size_t i = 0; i < numSamples; ++i) {
-    for (size_t k = 0; k < bfSize; ++k) {
-        if (bfs1[i][k] == 1) {
-            site_counts[k].fetch_add(1, std::memory_order_relaxed);
-        }
-    }
-}
-
 // Identify top 20% sites (Sorting is typically fast enough on main thread)
 std::vector<size_t> indices(bfSize);
 std::iota(indices.begin(), indices.end(), 0);
 std::sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
-    return site_counts[a].load() > site_counts[b].load();
+    // Total occurrences is simply meth + unmeth
+    return (global_unmeth_counts[a] + global_meth_counts[a]) > (global_unmeth_counts[b] + global_meth_counts[b]);
 });
 
 size_t top20_limit = static_cast<size_t>(bfSize * 1);
 std::vector<size_t> top_observed_indices(indices.begin(), indices.begin() + top20_limit);
-
 
 struct SiteInfo {
     size_t index;
@@ -1192,13 +1305,10 @@ std::vector<SiteInfo> site_results(top20_limit);
 #pragma omp parallel for schedule(dynamic)
 for (size_t idx = 0; idx < top20_limit; ++idx) {
     size_t k = top_observed_indices[idx];
-    uint32_t count0 = 0, count1 = 0;
-
-    for (size_t i = 0; i < numSamples; ++i) {
-        if (bfs1[i][k] == 1) {
-            (methylated_bfs1[i][k] == 1) ? count1++ : count0++;
-        }
-    }
+    
+    // Read directly from the updated global auxiliary structure
+    uint32_t count0 = global_unmeth_counts[k];
+    uint32_t count1 = global_meth_counts[k];
 
     double total = count0 + count1;
     double entropy = 0.0;
@@ -1215,13 +1325,39 @@ for (size_t idx = 0; idx < top20_limit; ++idx) {
 std::sort(site_results.begin(), site_results.end(), [](const SiteInfo& a, const SiteInfo& b) {
     return a.entropy > b.entropy;
 });
+
 std::cerr << "total CG signals count: " << bfSize << std::endl; 
 size_t final_count = std::min((size_t)20000000, site_results.size());
 std::vector<size_t> final_indices(final_count);
 for (size_t i = 0; i < final_count; ++i) final_indices[i] = site_results[i].index;
 
-export_matrices(bfs1, methylated_bfs1, final_indices, sample_names, dev);
+// export_matrices will need to be updated to accept vectors of filenames
+// instead of the in-memory bf and meth_bf matrices.
+export_matrices(bf_filenames, meth_filenames, final_indices, sample_names, dev);
 
+
+// --- START CLEANUP AND TIMING ---
+    std::cerr << "Cleaning up temporary disk files..." << std::endl;
+    auto cleanup_start = std::chrono::high_resolution_clock::now();
+
+    for (const auto& bf_file : bf_filenames) {
+        if (std::remove(bf_file.c_str()) != 0) {
+            std::cerr << "Error deleting file: " << bf_file << "\n";
+        }
+    }
+
+    for (const auto& meth_file : meth_filenames) {
+        if (std::remove(meth_file.c_str()) != 0) {
+            std::cerr << "Error deleting file: " << meth_file << "\n";
+        }
+    }
+
+    auto cleanup_end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> cleanup_duration = cleanup_end - cleanup_start;
+    
+    std::cerr << "File cleanup completed in " << cleanup_duration.count() << " seconds." << std::endl;
+    // --- END CLEANUP AND TIMING ---
 
     return 0;
+
 }
