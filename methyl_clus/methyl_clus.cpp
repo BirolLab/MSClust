@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 #include <fstream>
 #include <getopt.h>
 #include <iostream>
@@ -22,16 +23,15 @@
 #include "btllib/counting_bloom_filter.hpp"
 #include "btllib/bshash.hpp"
 #include <btllib/seq.hpp>
-#include <btllib/seq_reader.hpp>
 
 #include "city.h"
 
 #include <regex>
 #include <filesystem>
 
+// Global initialization for kseq
 KSEQ_INIT(gzFile, gzread)
 namespace fs = std::filesystem;
-
 
 double calculate_c_percentage(const std::string& read_seq) {
     if (read_seq.empty()) return 0.0;
@@ -192,14 +192,12 @@ float shannon_entropy_dimer(std::string_view s) {
     return entropy;
 }
 
-
 std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(
     const std::string& seq,
     unsigned k,
     const btllib::BloomFilter& clean_ct_mers,
-    const btllib::BloomFilter& clean_ga_mers//, const float shannon,  const float shannon2,  const float shannon3, const std::string&  qual,int phred_threshold
+    const btllib::BloomFilter& clean_ga_mers
 ) {
-    
     std::vector<std::pair<uint64_t, bool>> all_kmers_hash;
     btllib::BsHashDirectional bh(seq, 1, k, "CT"); 
     btllib::BsHashDirectional bh_ga(seq, 1, k, "GA"); 
@@ -208,7 +206,7 @@ std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(
         auto central_dimer = bh.center_dimer();
         if (central_dimer == "TG" || central_dimer == "CG" || central_dimer == "CA") {
             if (central_dimer == "CG") {
-                is_methylated = true; // double check it exists here, if not flag kmer and hash, add entropy and kmer check
+                is_methylated = true; 
                 if (clean_ct_mers.contains(bh.hashes())) { 
                     all_kmers_hash.push_back(std::make_pair(bh.hashes()[0], is_methylated));
                 }
@@ -228,7 +226,7 @@ std::vector<std::pair<uint64_t, bool>> get_all_methylation_kmers(
                     all_kmers_hash.push_back(std::make_pair(bh_ga.hashes()[0], is_methylated));
                 }
             } 
-	    }
+        }
     }
     return all_kmers_hash;
 }
@@ -247,7 +245,6 @@ void export_matrices(const std::vector<std::vector<uint8_t>>& bfs1,
         size_t actual_cut = std::min(cuts[f], final_indices.size());
         files[f].open("methylation_top_" + std::to_string(actual_cut) + ".csv");
         
-        // Header: Add "Sample_ID" as the first column
         files[f] << "Sample_ID";
         for (size_t j = 0; j < actual_cut; ++j) {
             files[f] << ",Site_" << final_indices[j];
@@ -256,7 +253,6 @@ void export_matrices(const std::vector<std::vector<uint8_t>>& bfs1,
     }
 
     for (size_t i = 0; i < numSamples; ++i) {
-        // --- START OF YOUR NAME CLEANING LOGIC ---
         std::string raw_name = sample_names[i];
         std::string clean_name;
 
@@ -278,9 +274,7 @@ void export_matrices(const std::vector<std::vector<uint8_t>>& bfs1,
             else
                 clean_name = raw_name.substr(start);
         }
-        // --- END OF NAME CLEANING LOGIC ---
 
-        // Prepare the row data
         std::vector<int> sample_row(final_indices.size());
         #pragma omp parallel for schedule(static)
         for (size_t j = 0; j < final_indices.size(); ++j) {
@@ -292,10 +286,9 @@ void export_matrices(const std::vector<std::vector<uint8_t>>& bfs1,
             }
         }
 
-        // Write to files
         for (size_t f = 0; f < cuts.size(); ++f) {
             size_t actual_cut = std::min(cuts[f], final_indices.size());
-            files[f] << clean_name; // Prepend Sample Name
+            files[f] << clean_name; 
             for (size_t j = 0; j < actual_cut; ++j) {
                 files[f] << "," << sample_row[j];
             }
@@ -320,7 +313,6 @@ void export_matrices(const std::vector<std::string>& bf_filenames,
         size_t actual_cut = std::min(cuts[f], final_indices.size());
         files[f].open("methylation_top_" + std::to_string(actual_cut) + ".csv");
         
-        // Header: Add "Sample_ID" as the first column
         files[f] << "Sample_ID";
         for (size_t j = 0; j < actual_cut; ++j) {
             files[f] << ",Site_" << final_indices[j];
@@ -329,7 +321,6 @@ void export_matrices(const std::vector<std::string>& bf_filenames,
     }
 
     for (size_t i = 0; i < numSamples; ++i) {
-        // Load the existence bitvector from disk
         std::ifstream bf_in(bf_filenames[i], std::ios::binary | std::ios::ate);
         if (!bf_in) {
             std::cerr << "Error opening " << bf_filenames[i] << "\n";
@@ -341,7 +332,6 @@ void export_matrices(const std::vector<std::string>& bf_filenames,
         bf_in.read(reinterpret_cast<char*>(sample_bf.data()), bf_size);
         bf_in.close();
 
-        // Load the methylation bitvector from disk
         std::ifstream meth_in(meth_filenames[i], std::ios::binary | std::ios::ate);
         if (!meth_in) {
             std::cerr << "Error opening " << meth_filenames[i] << "\n";
@@ -353,7 +343,6 @@ void export_matrices(const std::vector<std::string>& bf_filenames,
         meth_in.read(reinterpret_cast<char*>(sample_meth_bf.data()), meth_size);
         meth_in.close();
 
-        // --- START OF YOUR NAME CLEANING LOGIC ---
         std::string raw_name = sample_names[i];
         std::string clean_name;
 
@@ -375,16 +364,13 @@ void export_matrices(const std::vector<std::string>& bf_filenames,
             else
                 clean_name = raw_name.substr(start);
         }
-        // --- END OF NAME CLEANING LOGIC ---
 
-        // Prepare the row data
         std::vector<int> sample_row(final_indices.size());
         
         #pragma omp parallel for schedule(static)
         for (size_t j = 0; j < final_indices.size(); ++j) {
             size_t site_idx = final_indices[j];
             
-            // Bounds check safeguard
             if (site_idx < sample_bf.size()) {
                 if (sample_bf[site_idx] == 0) {
                     sample_row[j] = 0;
@@ -396,20 +382,24 @@ void export_matrices(const std::vector<std::string>& bf_filenames,
             }
         }
 
-        // Write to files
         for (size_t f = 0; f < cuts.size(); ++f) {
             size_t actual_cut = std::min(cuts[f], final_indices.size());
-            files[f] << clean_name; // Prepend Sample Name
+            files[f] << clean_name; 
             for (size_t j = 0; j < actual_cut; ++j) {
                 files[f] << "," << sample_row[j];
             }
             files[f] << "\n";
         }
-    } // Vectors sample_bf and sample_meth_bf safely fall out of scope here and are destroyed
+    } 
 
     for (auto& f : files) f.close();
 }
 
+struct Job {
+    std::string prefix;
+    std::string r1_file;
+    std::string r2_file;
+};
 
 int main(int argc, char* argv[]) {
     argparse::ArgumentParser program("example");
@@ -446,40 +436,33 @@ int main(int argc, char* argv[]) {
         .default_value(3.3f)
         .help("Trimer Shannon Entropy (default is 3.3)");
     program.add_argument("-k", "--kmer")
-        // unsigned
         .scan<'u', unsigned>()
         .default_value(25u)
         .help("specify the kmer size (default is 25)");
     program.add_argument("-m", "--min")
-        // unsigned
         .scan<'u', unsigned>()
         .default_value(3u)
         .help("specify the min kmer");
     program.add_argument("-n", "--max")
-        // unsigned
         .scan<'u', unsigned>()
         .default_value(3u)
         .help("specify the max kmer");
-    // add a development flag
     program.add_argument("-d", "--dev")
         .default_value(false)
         .implicit_value(true)
         .help("enable development mode (default is false)");
-
-        program.add_argument("-c", "--complexity")
+    program.add_argument("-c", "--complexity")
         .default_value(false)
         .implicit_value(true)
         .help("calculate complexity (default is false)");
-
-        program.add_argument("-x","--nome")
+    program.add_argument("-x","--nome")
         .default_value(false)
         .implicit_value(true)
         .help("nome seq (default is false)");
-        program.add_argument("-r","--rna")
+    program.add_argument("-r","--rna")
         .default_value(false)
         .implicit_value(true)
         .help("rna in reads (default is false)");
-
 
     try {
         program.parse_args(argc, argv);
@@ -504,7 +487,8 @@ int main(int argc, char* argv[]) {
     int phred_threshold = program.get<int>("-q");
     unsigned maxKmer = program.get<unsigned>("-n");
     unsigned k = program.get<unsigned>("-k");
-omp_set_num_threads(numThreads);
+
+    omp_set_num_threads(numThreads);
 
     std::cout << "Input file 1: " << inputFile1 << "\n";
     std::cout << "Input file 2: " << inputFile2 << "\n";
@@ -521,8 +505,6 @@ omp_set_num_threads(numThreads);
     std::cout << "Minimum k-mer occurence: " << minKmer << "\n";
     std::cout << "Maximum k-mer occurence: " << maxKmer << "\n";
 
-
-    // read the first input file and store each line into a vector
     std::vector<std::string> lines1;
     std::ifstream file1(inputFile1);
     if (file1.is_open()) {
@@ -536,7 +518,6 @@ omp_set_num_threads(numThreads);
         return 1;
     }
 
-    // read the second input file and store each line into a vector
     std::vector<std::string> lines2;
     std::ifstream file2(inputFile2);
     if (file2.is_open()) {
@@ -552,791 +533,664 @@ omp_set_num_threads(numThreads);
 
     auto pairs = pair_fastq_files(lines1);
 
+    // Prepare flat jobs and sample names up front so they are accessible to all blocks
+    std::vector<Job> flat_jobs;
+    std::vector<std::string> sample_names;
+    for (const auto& [pref, pair] : pairs) {
+        flat_jobs.push_back({pref, pair.first, pair.second});
+        sample_names.push_back(pref);
+    }
+
     if (complexity){
         std::cerr << "logging complexity"  << std::endl;
-        int num_lines_2 = 0;
 
         std::ofstream cg_log("cg_complexity.tsv");
         std::ofstream cg2_log("cg2_complexity.tsv");
         std::ofstream cg3_log("cg3_complexity.tsv");
-        /*methy_kmer_log << "error_rate\n";  //
-        */
-        for (const auto& [prefix, pair] : pairs) {
-            const auto& r1_file = pair.first;
-            const auto& r2_file = pair.second;
+        
+        #pragma omp parallel for schedule(dynamic)
+        for (size_t i = 0; i < flat_jobs.size(); ++i) {
+            const auto& job = flat_jobs[i];
 
-            std::cerr << num_lines_2 << std::endl;
-            num_lines_2++;
+            gzFile fp1 = gzopen(job.r1_file.c_str(), "r");
+            if (fp1) {
+                kseq_t* seq = kseq_init(fp1);
+                while (kseq_read(seq) >= 0) {
+                    std::string record_seq(seq->seq.s, seq->seq.l);
+                    if (record_seq.size() < k) continue;
 
-            btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
-
-
-            #pragma omp parallel
-            for (const auto record : reader) {
-            if (record.seq.size() < k) {
-                continue;
-            }
-                for (size_t j = 0; j + k <= record.seq.size(); ++j) {
-                    char meth_base = dev ? '1' : 'C';
-                    if (record.seq[j + k / 2 - 1] == meth_base && record.seq[j + k / 2] == 'G') {
-                        std::string orig_kmer = record.seq.substr(j, k);
-                        auto converted_kmers = generate_converted_kmers(orig_kmer, dev);
-                        float cg1 = shannon_entropy(converted_kmers[0]);
-                        float cg2 = shannon_entropy_dimer(converted_kmers[0]);
-                        float cg3 = shannon_entropy_trimer(converted_kmers[0]);
-                        float cg1_rc = shannon_entropy(converted_kmers[1]);
-                        float cg2_rc = shannon_entropy_dimer(converted_kmers[1]);
-                        float cg3_rc = shannon_entropy_trimer(converted_kmers[1]);
-            #pragma omp critical 
-            {
-                        cg_log << cg1 << std::endl;
-                        cg2_log << cg2 << std::endl;
-                        cg3_log << cg3 << std::endl;
-                        cg_log << cg1_rc << std::endl;
-                        cg2_log << cg2_rc << std::endl;
-                        cg3_log << cg3_rc << std::endl;
-            }
-                            
-                    }
-                }
-            }
-            if (!pair.second.empty()) {
-                btllib::SeqReader reader2(r2_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
-
-
-                #pragma omp parallel
-                for (const auto record : reader2) {
-                    for (size_t j = 0; j + k <= record.seq.size(); ++j) {
+                    for (size_t j = 0; j + k <= record_seq.size(); ++j) {
                         char meth_base = dev ? '1' : 'C';
-                        if (record.seq[j + k / 2 - 1] == meth_base && record.seq[j + k / 2] == 'G') {
-                        std::string orig_kmer = record.seq.substr(j, k);
-                        auto converted_kmers = generate_converted_kmers(orig_kmer, dev);
-                        float cg1 = shannon_entropy(converted_kmers[0]);
-                        float cg2 = shannon_entropy_dimer(converted_kmers[0]);
-                        float cg3 = shannon_entropy_trimer(converted_kmers[0]);
-                        float cg1_rc = shannon_entropy(converted_kmers[1]);
-                        float cg2_rc = shannon_entropy_dimer(converted_kmers[1]);
-                        float cg3_rc = shannon_entropy_trimer(converted_kmers[1]);
-                #pragma omp critical 
-                {
-                        cg_log << cg1 << std::endl;
-                        cg2_log << cg2 << std::endl;
-                        cg3_log << cg3 << std::endl;
-                        cg_log << cg1_rc << std::endl;
-                        cg2_log << cg2_rc << std::endl;
-                        cg3_log << cg3_rc << std::endl;
-                }
-                                
+                        if (record_seq[j + k / 2 - 1] == meth_base && record_seq[j + k / 2] == 'G') {
+                            std::string orig_kmer = record_seq.substr(j, k);
+                            auto converted_kmers = generate_converted_kmers(orig_kmer, dev);
+                            float cg1 = shannon_entropy(converted_kmers[0]);
+                            float cg2 = shannon_entropy_dimer(converted_kmers[0]);
+                            float cg3 = shannon_entropy_trimer(converted_kmers[0]);
+                            float cg1_rc = shannon_entropy(converted_kmers[1]);
+                            float cg2_rc = shannon_entropy_dimer(converted_kmers[1]);
+                            float cg3_rc = shannon_entropy_trimer(converted_kmers[1]);
+                            #pragma omp critical 
+                            {
+                                cg_log << cg1 << std::endl;
+                                cg2_log << cg2 << std::endl;
+                                cg3_log << cg3 << std::endl;
+                                cg_log << cg1_rc << std::endl;
+                                cg2_log << cg2_rc << std::endl;
+                                cg3_log << cg3_rc << std::endl;
+                            }
                         }
                     }
+                }
+                kseq_destroy(seq);
+                gzclose(fp1);
+            }
+
+            if (!job.r2_file.empty()) {
+                gzFile fp2 = gzopen(job.r2_file.c_str(), "r");
+                if (fp2) {
+                    kseq_t* seq = kseq_init(fp2);
+                    while (kseq_read(seq) >= 0) {
+                        std::string record_seq(seq->seq.s, seq->seq.l);
+                        if (record_seq.size() < k) continue;
+
+                        for (size_t j = 0; j + k <= record_seq.size(); ++j) {
+                            char meth_base = dev ? '1' : 'C';
+                            if (record_seq[j + k / 2 - 1] == meth_base && record_seq[j + k / 2] == 'G') {
+                                std::string orig_kmer = record_seq.substr(j, k);
+                                auto converted_kmers = generate_converted_kmers(orig_kmer, dev);
+                                float cg1 = shannon_entropy(converted_kmers[0]);
+                                float cg2 = shannon_entropy_dimer(converted_kmers[0]);
+                                float cg3 = shannon_entropy_trimer(converted_kmers[0]);
+                                float cg1_rc = shannon_entropy(converted_kmers[1]);
+                                float cg2_rc = shannon_entropy_dimer(converted_kmers[1]);
+                                float cg3_rc = shannon_entropy_trimer(converted_kmers[1]);
+                                #pragma omp critical 
+                                {
+                                    cg_log << cg1 << std::endl;
+                                    cg2_log << cg2 << std::endl;
+                                    cg3_log << cg3 << std::endl;
+                                    cg_log << cg1_rc << std::endl;
+                                    cg2_log << cg2_rc << std::endl;
+                                    cg3_log << cg3_rc << std::endl;
+                                }
+                            }
+                        }
+                    }
+                    kseq_destroy(seq);
+                    gzclose(fp2);
                 }
             }
         }
         exit(0);
     }
 
-
     std::vector<std::vector<uint8_t>> bfs1;
     std::vector<std::vector<uint8_t>> methylated_bfs1;
-    // const variable 60 mil for bf
-    //const size_t bfSize = 30000000000;
-    // calculate size needed for a false positive rate of 0.1
-    //const int bfSize = -1 * num_elements / log(0.1);
 
-std::cerr << "making methylated kmers dataset" << std::endl;
+    std::cerr << "making methylated kmers dataset" << std::endl;
 
-//std::unordered_set<uint64_t> methylated_kmers_in_dataset;
-//uint64_t max_size = max_size;
-uint64_t max_size = 3000000000ULL;
-btllib::BloomFilter prelim_ct_mers(max_size, 1);
-btllib::BloomFilter prelim_ga_mers(max_size, 1);
-btllib::BloomFilter clean_ct_mers(max_size, 1);
-btllib::BloomFilter clean_ga_mers(max_size, 1);
-btllib::BloomFilter methylated_kmers_in_dataset(max_size, 1);
-//btllib::BloomFilter all_kmers_in_dataset(max_size, 1);
-btllib::CountingBloomFilter8 error_kmer_ct(max_size, 3);
-btllib::CountingBloomFilter8 error_kmer_ga(max_size, 3);
+    uint64_t max_size = 3000000000ULL;
+    btllib::BloomFilter prelim_ct_mers(max_size, 1);
+    btllib::BloomFilter prelim_ga_mers(max_size, 1);
+    btllib::BloomFilter clean_ct_mers(max_size, 1);
+    btllib::BloomFilter clean_ga_mers(max_size, 1);
+    btllib::BloomFilter methylated_kmers_in_dataset(max_size, 1);
+    btllib::CountingBloomFilter8 error_kmer_ct(max_size, 3);
+    btllib::CountingBloomFilter8 error_kmer_ga(max_size, 3);
 
+    // ==========================================
+    // 1ST PASS
+    // ==========================================
+    #pragma omp parallel for schedule(dynamic)
+    for (size_t i = 0; i < flat_jobs.size(); ++i) {
+        const auto& job = flat_jobs[i];
 
+        gzFile fp1 = gzopen(job.r1_file.c_str(), "r");
+        if (fp1) {
+            kseq_t* seq = kseq_init(fp1);
+            while (kseq_read(seq) >= 0) {
+                std::string record_seq(seq->seq.s, seq->seq.l);
+                std::string record_qual = seq->qual.l > 0 ? std::string(seq->qual.s, seq->qual.l) : "";
 
-int num_lines_2 = 0;
+                if (record_seq.size() < k) continue;
+                if (calculate_avg_phred(record_qual) < 20) continue;
+                if (rna && calculate_c_percentage(record_seq) > 6) continue;
 
-
-std::vector<std::string> sample_names;
-//std::atomic<size_t> total_bases{0}; // Prevents the compiler from optimizing the loop away
-
-// Initialize kseq for gzFile (works for both plain text and .gz files)
-
-
-// ... assuming pairs and num_lines_2 exist above ...
-
-
-
-// Spawn a massive pool of 48 worker threads
-struct Job {
-    std::string prefix;
-    std::string r1_file;
-    std::string r2_file;
-};
-
-
-std::vector<Job> flat_jobs;
-for (const auto& [prefix, pair] : pairs) {
-    flat_jobs.push_back({prefix, pair.first, pair.second});
-}
-
-
-std::vector<std::string> sample_names;
-for (const auto& [prefix, pair] : pairs) {
-    const auto& r1_file = pair.first;
-    const auto& r2_file = pair.second;
-
-
-    sample_names.push_back(prefix);
-    std::cerr << num_lines_2 << std::endl;
-    std::cerr << r1_file << std::endl;
-    std::cerr << r2_file << std::endl;
-    num_lines_2++;
-
-    btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE);
-
-
-#pragma omp parallel
-    for (const auto record : reader) {
-        if (record.seq.size() < k) {
-            continue;
-        }
-        if (calculate_avg_phred(record.qual) < 20) {
-            continue;
-        }
-        if (rna && calculate_c_percentage(record.seq) >6) {
-            continue;
-        }
-
-        btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
-        btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
-        while(bh.roll() && bh_ga.roll()) {
-            
-            size_t  j = bh.get_pos();
-            //std::string_view kmer{record.seq.data() + j, k};
-
-            auto central_dimer = bh.center_dimer();
-            if (central_dimer == "CG") {
-                //size_t num_dimers = k / 2;
-                //size_t center_dimer = num_dimers / 2;
-                //size_t center_pos = center_dimer * 2;
-                const size_t cg_pos = j + (k / 2) - 1;  // position of 'C' in central "CG"
-
-                const bool has_g_before_cg =
-                    (cg_pos > 0) && (record.seq[cg_pos - 1] == 'G');
-
-                const bool has_c_after_cg =
-                    (cg_pos + 2 < record.seq.size()) &&
-                    (record.seq[cg_pos + 2] == 'C');
-                if (nome_seq && has_c_after_cg && has_g_before_cg) {
-                    continue;
-                }
-                bool pass_quality = true;
-                double total_error_prob = 0.0;
-
-                for (size_t m = 0; m < k; ++m) {
-                    int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
-                    double error_prob = std::pow(10.0, -phred / 10.0);
-                    total_error_prob += error_prob;
-                }
-
-                double avg_error_prob = total_error_prob / k;
-                double avg_phred_score = -10.0 * std::log10(avg_error_prob);
-
-
-                if (avg_phred_score < phred_threshold) {
-                    pass_quality = false;
-                }
-                if (!pass_quality) continue;
-                std::string_view orig_kmer{record.seq.data() + j, k};
-
-
-//std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
-//assert(center_from_kmer == central_dimer);
-                if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
-                    continue;
-                }
-                if (nome_seq) {
-                    if (!has_g_before_cg) {
-                        error_kmer_ct.insert(bh.hashes());
-                    }
-                }  else {
-                    error_kmer_ct.insert(bh.hashes());
-                }
-                if (nome_seq) {
-                    if (!has_c_after_cg) {
-                        error_kmer_ga.insert(bh_ga.hashes());
-                    }
-
-                }  else {
-                    error_kmer_ga.insert(bh_ga.hashes());
-                }
+                btllib::BsHashDirectional bh(record_seq, 3, k, "CT");
+                btllib::BsHashDirectional bh_ga(record_seq, 3, k, "GA");
                 
-              
-            }
-        }
-    }
-    if (!pair.second.empty()) {
+                while(bh.roll() && bh_ga.roll()) {
+                    size_t j = bh.get_pos();
+                    auto central_dimer = bh.center_dimer();
+                    
+                    if (central_dimer == "CG") {
+                        const size_t cg_pos = j + (k / 2) - 1; 
+                        const bool has_g_before_cg = (cg_pos > 0) && (record_seq[cg_pos - 1] == 'G');
+                        const bool has_c_after_cg = (cg_pos + 2 < record_seq.size()) && (record_seq[cg_pos + 2] == 'C');
+                        
+                        if (nome_seq && has_c_after_cg && has_g_before_cg) continue;
+                        
+                        bool pass_quality = true;
+                        double total_error_prob = 0.0;
 
-        btllib::SeqReader reader2(r2_file, btllib::SeqReader::Flag::SHORT_MODE);
-
-
-#pragma omp parallel
-        for (const auto record : reader2) {
-            if (record.seq.size() < k) {
-                continue;
-            }
-            if (calculate_avg_phred(record.qual) < 20) {
-                continue;
-            }
-        if (rna && calculate_c_percentage(record.seq) >6) {
-            continue;
-        }
-
-            btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
-            btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
-
-            while(bh.roll() && bh_ga.roll()) {
-                size_t  j = bh.get_pos();
-
-            auto central_dimer = bh.center_dimer();
-            if (central_dimer == "CG") {
-                const size_t cg_pos = j + (k / 2) - 1;  // position of 'C' in central "CG"
-
-                const bool has_g_before_cg =
-                    (cg_pos > 0) && (record.seq[cg_pos - 1] == 'G');
-
-                const bool has_c_after_cg =
-                    (cg_pos + 2 < record.seq.size()) &&
-                    (record.seq[cg_pos + 2] == 'C');
-                if (nome_seq && has_c_after_cg && has_g_before_cg) {
-                    continue;
-                }
-                    bool pass_quality = true;
-                    double total_error_prob = 0.0;
-
-                    for (size_t m = 0; m < k; ++m) {
-                        int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
-                        double error_prob = std::pow(10.0, -phred / 10.0);
-                        total_error_prob += error_prob;
-                    }
-
-                    double avg_error_prob = total_error_prob / k;
-                    double avg_phred_score = -10.0 * std::log10(avg_error_prob);
-
-                    if (avg_phred_score < phred_threshold) {
-                        pass_quality = false;
-                    }
-                    if (!pass_quality) continue;
-
-                    std::string_view orig_kmer{record.seq.data() + j, k};
-size_t num_dimers = k / 2;
-size_t center_dimer = num_dimers / 2;
-size_t center_pos = center_dimer * 2;
-
-std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
-assert(center_from_kmer == central_dimer);
-                    if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
-                        continue;
-                    }
-
-                    if (nome_seq) {
-                        if (!has_g_before_cg) {
-                            error_kmer_ct.insert(bh.hashes());
+                        if (!record_qual.empty()) {
+                            for (size_t m = 0; m < k; ++m) {
+                                int phred = static_cast<unsigned char>(record_qual[j + m]) - 33;
+                                double error_prob = std::pow(10.0, -phred / 10.0);
+                                total_error_prob += error_prob;
+                            }
+                            double avg_error_prob = total_error_prob / k;
+                            double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+                            if (avg_phred_score < phred_threshold) pass_quality = false;
                         }
-                    }  else {
-                        error_kmer_ct.insert(bh.hashes());
-                    }
-                    if (nome_seq) {
-                        if (!has_c_after_cg) {
+
+                        if (!pass_quality) continue;
+
+                        std::string_view orig_kmer{record_seq.data() + j, k};
+
+                        if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                            continue;
+                        }
+
+                        if (nome_seq) {
+                            if (!has_g_before_cg) error_kmer_ct.insert(bh.hashes());
+                            if (!has_c_after_cg) error_kmer_ga.insert(bh_ga.hashes());
+                        } else {
+                            error_kmer_ct.insert(bh.hashes());
                             error_kmer_ga.insert(bh_ga.hashes());
                         }
-
-                    }  else {
-                        error_kmer_ga.insert(bh_ga.hashes());
                     }
+                }
+            }
+            kseq_destroy(seq);
+            gzclose(fp1);
+        }
+
+        if (!job.r2_file.empty()) {
+            gzFile fp2 = gzopen(job.r2_file.c_str(), "r");
+            if (fp2) {
+                kseq_t* seq = kseq_init(fp2);
+                while (kseq_read(seq) >= 0) {
+                    std::string record_seq(seq->seq.s, seq->seq.l);
+                    std::string record_qual = seq->qual.l > 0 ? std::string(seq->qual.s, seq->qual.l) : "";
+
+                    if (record_seq.size() < k) continue;
+                    if (calculate_avg_phred(record_qual) < 20) continue;
+                    if (rna && calculate_c_percentage(record_seq) > 6) continue;
+
+                    btllib::BsHashDirectional bh(record_seq, 3, k, "CT");
+                    btllib::BsHashDirectional bh_ga(record_seq, 3, k, "GA");
                     
+                    while(bh.roll() && bh_ga.roll()) {
+                        size_t j = bh.get_pos();
+                        auto central_dimer = bh.center_dimer();
+                        
+                        if (central_dimer == "CG") {
+                            const size_t cg_pos = j + (k / 2) - 1;
+                            const bool has_g_before_cg = (cg_pos > 0) && (record_seq[cg_pos - 1] == 'G');
+                            const bool has_c_after_cg = (cg_pos + 2 < record_seq.size()) && (record_seq[cg_pos + 2] == 'C');
+                            
+                            if (nome_seq && has_c_after_cg && has_g_before_cg) continue;
+                            
+                            bool pass_quality = true;
+                            double total_error_prob = 0.0;
+
+                            if (!record_qual.empty()) {
+                                for (size_t m = 0; m < k; ++m) {
+                                    int phred = static_cast<unsigned char>(record_qual[j + m]) - 33;
+                                    double error_prob = std::pow(10.0, -phred / 10.0);
+                                    total_error_prob += error_prob;
+                                }
+                                double avg_error_prob = total_error_prob / k;
+                                double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+                                if (avg_phred_score < phred_threshold) pass_quality = false;
+                            }
+
+                            if (!pass_quality) continue;
+
+                            std::string_view orig_kmer{record_seq.data() + j, k};
+
+                            if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                                continue;
+                            }
+
+                            if (nome_seq) {
+                                if (!has_g_before_cg) error_kmer_ct.insert(bh.hashes());
+                                if (!has_c_after_cg) error_kmer_ga.insert(bh_ga.hashes());
+                            } else {
+                                error_kmer_ct.insert(bh.hashes());
+                                error_kmer_ga.insert(bh_ga.hashes());
+                            }
+                        }
+                    }
                 }
-            }
-        }
-    }
-}
-
-
-std::cerr << "2nd pass" << std::endl;
-for (const auto& [prefix, pair] : pairs) {
-    const auto& r1_file = pair.first;
-    const auto& r2_file = pair.second;
-
-
-    std::cerr << num_lines_2 << std::endl;
-    num_lines_2++;
-
-btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
-
-
-#pragma omp parallel
-    for (const auto record : reader) {
-        if (record.seq.size() < k) {
-            continue;
-        }
-        if (calculate_avg_phred(record.qual) < 20) {
-            continue;
-        }
-        if (calculate_c_percentage(record.seq) >6) {
-            continue;
-        }
-
-        btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
-        btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
-        while(bh.roll() && bh_ga.roll()) {
-            size_t  j = bh.get_pos();
-
-            auto central_dimer = bh.center_dimer();
-            if (central_dimer == "CG") {
-
-                bool pass_quality = true;
-                double total_error_prob = 0.0;
-
-                for (size_t m = 0; m < k; ++m) {
-                    int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
-                    double error_prob = std::pow(10.0, -phred / 10.0);
-                    total_error_prob += error_prob;
-                }
-
-                double avg_error_prob = total_error_prob / k;
-                double avg_phred_score = -10.0 * std::log10(avg_error_prob);
-
-                if (avg_phred_score < phred_threshold) {
-                    pass_quality = false;
-                }
-                if (!pass_quality) continue;
-
-                std::string_view orig_kmer{record.seq.data() + j, k};
-size_t num_dimers = k / 2;
-size_t center_dimer = num_dimers / 2;
-size_t center_pos = center_dimer * 2;
-
-std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
-assert(center_from_kmer == central_dimer);
-                if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
-                    continue;
-                }
-                if (error_kmer_ct.contains(bh.hashes()) > minKmer && error_kmer_ct.contains(bh.hashes()) < maxKmer) {
-                    prelim_ct_mers.insert(bh.hashes());
-
-                }
-                if (error_kmer_ga.contains(bh_ga.hashes()) > minKmer && error_kmer_ga.contains(bh_ga.hashes()) < maxKmer) {
-                   prelim_ga_mers.insert(bh_ga.hashes());
-                }
+                kseq_destroy(seq);
+                gzclose(fp2);
             }
         }
     }
 
-    if (!pair.second.empty()) {
-        btllib::SeqReader reader2(r2_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
+    // ==========================================
+    // 2ND PASS
+    // ==========================================
+    std::cerr << "2nd pass" << std::endl;
+    #pragma omp parallel for schedule(dynamic)
+    for (size_t i = 0; i < flat_jobs.size(); ++i) {
+        const auto& job = flat_jobs[i];
 
+        gzFile fp1 = gzopen(job.r1_file.c_str(), "r");
+        if (fp1) {
+            kseq_t* seq = kseq_init(fp1);
+            while (kseq_read(seq) >= 0) {
+                std::string record_seq(seq->seq.s, seq->seq.l);
+                std::string record_qual = seq->qual.l > 0 ? std::string(seq->qual.s, seq->qual.l) : "";
 
-    #pragma omp parallel
-        for (const auto record : reader2) {
-            if (record.seq.size() < k) {
-                continue;
-            }
-            if (calculate_avg_phred(record.qual) < 20) {
-                continue;
-            }
-        if (calculate_c_percentage(record.seq) >6) {
-            continue;
-        }
-            btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
-            btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
-            while(bh.roll() && bh_ga.roll()) {
-                size_t j = bh.get_pos();
-            auto central_dimer = bh.center_dimer();
-            if (central_dimer == "CG") {
-                    bool pass_quality = true;
-                    double total_error_prob = 0.0;
+                if (record_seq.size() < k) continue;
+                if (calculate_avg_phred(record_qual) < 20) continue;
+                if (calculate_c_percentage(record_seq) > 6) continue;
 
-                    for (size_t m = 0; m < k; ++m) {
-                        int phred = static_cast<unsigned char>(record.qual[j + m]) - 33;
-                        double error_prob = std::pow(10.0, -phred / 10.0);
-                        total_error_prob += error_prob;
-                    }
+                btllib::BsHashDirectional bh(record_seq, 3, k, "CT");
+                btllib::BsHashDirectional bh_ga(record_seq, 3, k, "GA");
+                
+                while(bh.roll() && bh_ga.roll()) {
+                    size_t j = bh.get_pos();
+                    auto central_dimer = bh.center_dimer();
+                    
+                    if (central_dimer == "CG") {
+                        bool pass_quality = true;
+                        double total_error_prob = 0.0;
 
-                    double avg_error_prob = total_error_prob / k;
-                    double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+                        if (!record_qual.empty()) {
+                            for (size_t m = 0; m < k; ++m) {
+                                int phred = static_cast<unsigned char>(record_qual[j + m]) - 33;
+                                double error_prob = std::pow(10.0, -phred / 10.0);
+                                total_error_prob += error_prob;
+                            }
+                            double avg_error_prob = total_error_prob / k;
+                            double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+                            if (avg_phred_score < phred_threshold) pass_quality = false;
+                        }
 
-                    if (avg_phred_score < phred_threshold) {
-                        pass_quality = false;
-                    }
-                    if (!pass_quality) continue;
-                    std::string_view orig_kmer{record.seq.data() + j, k};
-                    size_t num_dimers = k / 2;
-                    size_t center_dimer = num_dimers / 2;
-                    size_t center_pos = center_dimer * 2;
+                        if (!pass_quality) continue;
 
-                    std::string_view center_from_kmer{orig_kmer.data() + center_pos, 2};
-                    assert(center_from_kmer == central_dimer);
-                    if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
-                        continue;
-                    }
-                    if (error_kmer_ct.contains(bh.hashes()) > minKmer && error_kmer_ct.contains(bh.hashes()) < maxKmer) {
-                        prelim_ct_mers.insert(bh.hashes());
-                    }
-                    if (error_kmer_ga.contains(bh_ga.hashes()) > minKmer && error_kmer_ga.contains(bh_ga.hashes()) < maxKmer) {
-                        prelim_ga_mers.insert(bh_ga.hashes());
+                        std::string_view orig_kmer{record_seq.data() + j, k};
+
+                        if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                            continue;
+                        }
+
+                        if (error_kmer_ct.contains(bh.hashes()) > minKmer && error_kmer_ct.contains(bh.hashes()) < maxKmer) {
+                            prelim_ct_mers.insert(bh.hashes());
+                        }
+                        if (error_kmer_ga.contains(bh_ga.hashes()) > minKmer && error_kmer_ga.contains(bh_ga.hashes()) < maxKmer) {
+                            prelim_ga_mers.insert(bh_ga.hashes());
+                        }
                     }
                 }
             }
-        }
-    }
-}
-
-
-std::cerr << "3rd pass" << std::endl;
-for (const auto& [prefix, pair] : pairs) {
-    const auto& r1_file = pair.first;
-    const auto& r2_file = pair.second;
-
-
-    std::cerr << num_lines_2 << std::endl;
-    num_lines_2++;
-
-    btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
-
-
-#pragma omp parallel
-    for (const auto record : reader) {
-        if (record.seq.size() < k) {
-            continue;
-        }
-        if (calculate_avg_phred(record.qual) < 20) {
-            continue;
-        }
-        if (calculate_c_percentage(record.seq) >6) {
-            continue;
+            kseq_destroy(seq);
+            gzclose(fp1);
         }
 
-        btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
-        btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
-        while(bh.roll() && bh_ga.roll()) {
-            auto central_dimer = bh.center_dimer();
-            if (central_dimer == "TG") {
-                if (prelim_ct_mers.contains(bh.hashes())) {
-                    clean_ct_mers.insert(bh.hashes());
-                    methylated_kmers_in_dataset.insert(bh.hashes());
-                }
-            }
-            if (central_dimer == "CA") {
-                if (prelim_ga_mers.contains(bh_ga.hashes())) {
-                   clean_ga_mers.insert(bh_ga.hashes());
-                   methylated_kmers_in_dataset.insert(bh_ga.hashes());
-                }
-            }
-        }
-    }
+        if (!job.r2_file.empty()) {
+            gzFile fp2 = gzopen(job.r2_file.c_str(), "r");
+            if (fp2) {
+                kseq_t* seq = kseq_init(fp2);
+                while (kseq_read(seq) >= 0) {
+                    std::string record_seq(seq->seq.s, seq->seq.l);
+                    std::string record_qual = seq->qual.l > 0 ? std::string(seq->qual.s, seq->qual.l) : "";
 
-    if (!pair.second.empty()) {
-        btllib::SeqReader reader2(r2_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
+                    if (record_seq.size() < k) continue;
+                    if (calculate_avg_phred(record_qual) < 20) continue;
+                    if (calculate_c_percentage(record_seq) > 6) continue;
 
+                    btllib::BsHashDirectional bh(record_seq, 3, k, "CT");
+                    btllib::BsHashDirectional bh_ga(record_seq, 3, k, "GA");
+                    
+                    while(bh.roll() && bh_ga.roll()) {
+                        size_t j = bh.get_pos();
+                        auto central_dimer = bh.center_dimer();
+                        
+                        if (central_dimer == "CG") {
+                            bool pass_quality = true;
+                            double total_error_prob = 0.0;
 
-    #pragma omp parallel
-        for (const auto record : reader2) {
-            if (record.seq.size() < k) {
-                continue;
-            }
-            if (calculate_avg_phred(record.qual) < 20) {
-                continue;
-            }
-        if (calculate_c_percentage(record.seq) >6) {
-            continue;
-        }
-            btllib::BsHashDirectional bh(record.seq, 3, k, "CT");
-            btllib::BsHashDirectional bh_ga(record.seq, 3, k, "GA");
-            while(bh.roll() && bh_ga.roll()) {
-                auto central_dimer = bh.center_dimer();
-                if (central_dimer == "TG") {
-                    if (prelim_ct_mers.contains(bh.hashes())) {
-                        clean_ct_mers.insert(bh.hashes());
-                        methylated_kmers_in_dataset.insert(bh.hashes());
+                            if (!record_qual.empty()) {
+                                for (size_t m = 0; m < k; ++m) {
+                                    int phred = static_cast<unsigned char>(record_qual[j + m]) - 33;
+                                    double error_prob = std::pow(10.0, -phred / 10.0);
+                                    total_error_prob += error_prob;
+                                }
+                                double avg_error_prob = total_error_prob / k;
+                                double avg_phred_score = -10.0 * std::log10(avg_error_prob);
+                                if (avg_phred_score < phred_threshold) pass_quality = false;
+                            }
 
+                            if (!pass_quality) continue;
+
+                            std::string_view orig_kmer{record_seq.data() + j, k};
+
+                            if (shannon_entropy(orig_kmer) < shannon && shannon_entropy_dimer(orig_kmer) < shannon2 && shannon_entropy_trimer(orig_kmer) < shannon3) {
+                                continue;
+                            }
+
+                            if (error_kmer_ct.contains(bh.hashes()) > minKmer && error_kmer_ct.contains(bh.hashes()) < maxKmer) {
+                                prelim_ct_mers.insert(bh.hashes());
+                            }
+                            if (error_kmer_ga.contains(bh_ga.hashes()) > minKmer && error_kmer_ga.contains(bh_ga.hashes()) < maxKmer) {
+                                prelim_ga_mers.insert(bh_ga.hashes());
+                            }
+                        }
                     }
                 }
-                if (central_dimer == "CA") {
-                    if (prelim_ga_mers.contains(bh_ga.hashes())) {
-                        clean_ga_mers.insert(bh_ga.hashes());
-                        methylated_kmers_in_dataset.insert(bh_ga.hashes());
+                kseq_destroy(seq);
+                gzclose(fp2);
+            }
+        }
+    }
+
+    // ==========================================
+    // 3RD PASS
+    // ==========================================
+    std::cerr << "3rd pass" << std::endl;
+    #pragma omp parallel for schedule(dynamic)
+    for (size_t i = 0; i < flat_jobs.size(); ++i) {
+        const auto& job = flat_jobs[i];
+
+        gzFile fp1 = gzopen(job.r1_file.c_str(), "r");
+        if (fp1) {
+            kseq_t* seq = kseq_init(fp1);
+            while (kseq_read(seq) >= 0) {
+                std::string record_seq(seq->seq.s, seq->seq.l);
+                std::string record_qual = seq->qual.l > 0 ? std::string(seq->qual.s, seq->qual.l) : "";
+
+                if (record_seq.size() < k) continue;
+                if (calculate_avg_phred(record_qual) < 20) continue;
+                if (calculate_c_percentage(record_seq) > 6) continue;
+
+                btllib::BsHashDirectional bh(record_seq, 3, k, "CT");
+                btllib::BsHashDirectional bh_ga(record_seq, 3, k, "GA");
+                
+                while(bh.roll() && bh_ga.roll()) {
+                    auto central_dimer = bh.center_dimer();
+                    if (central_dimer == "TG") {
+                        if (prelim_ct_mers.contains(bh.hashes())) {
+                            clean_ct_mers.insert(bh.hashes());
+                            methylated_kmers_in_dataset.insert(bh.hashes());
+                        }
                     }
-                }
-            }
-        }
-    }
-}
-
-
-
-
-std::unordered_map<uint64_t, size_t> hash_to_loc_map;
-
-/*std::atomic<size_t> all_bfSize(0);
-
-#pragma omp parallel for schedule(static)
-for (uint64_t i = 0; i < max_size * 8; ++i) {
-    if (all_kmers_in_dataset.contains({i})) {  // Bloom filter says 'possibly present'
-        all_bfSize.fetch_add(1, std::memory_order_relaxed);  // unique dense index
-    }
-}
-
-std::cerr << "all_bfSize: " <<  all_bfSize <<std::endl;*/
-
-std::cerr << "Mapping Bloom Filter" << std::endl;
-std::atomic<size_t> bfSize(0);
-
-#pragma omp parallel for schedule(static)
-for (uint64_t i = 0; i < max_size * 8; ++i) {
-    if (methylated_kmers_in_dataset.contains({i})) {  // Bloom filter says 'possibly present'
-        size_t index = bfSize.fetch_add(1, std::memory_order_relaxed);  // unique dense index
-        #pragma omp critical
-        {
-            hash_to_loc_map[i] = index;
-        }
-    }
-}
-std::unordered_map<uint64_t, std::pair<double, double>> kmer_counts;
-std::mutex kmer_mutex;
-std::cerr << "bfSize: " <<  bfSize <<std::endl;
-std::cerr << "making bit vector" << std::endl;
-int num_lines = 0;
-
-// Auxiliary data structures to track metrics needed for Shannon entropy across all samples
-std::vector<uint32_t> global_unmeth_counts(bfSize, 0);
-std::vector<uint32_t> global_meth_counts(bfSize, 0);
-
-// Track filenames to pass into the export function later
-std::vector<std::string> bf_filenames;
-std::vector<std::string> meth_filenames;
-
-for (const auto& [prefix, pair] : pairs) {
-    const auto& r1_file = pair.first;
-    const auto& r2_file = pair.second;
-
-    std::cerr << "reading line " << num_lines++ << std::endl;
-
-    std::vector<uint8_t> final_bf(bfSize, 0);
-    std::vector<uint8_t> final_meth_bf(bfSize, 0);
-
-    btllib::SeqReader reader(r1_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
-
-    #pragma omp parallel
-    for (const auto record : reader) {
-        if (record.seq.size() < k) {
-            continue;
-        }
-        if (calculate_c_percentage(record.seq) > 6) {
-            continue;
-        }
-        if (calculate_avg_phred(record.qual) < 20) {
-            continue;
-        }
-
-        std::vector<std::pair<uint64_t, bool>> all_kmers;
-        all_kmers = get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers);
-
-        for (const auto& kmer : all_kmers) {
-            size_t idx = hash_to_loc_map[kmer.first % (max_size * 8)];
-            final_bf[idx] = 1;
-            if (kmer.second) {
-                final_meth_bf[idx] = 1;
-            }
-
-            // Track methylation/unmethylation counts
-            uint64_t key = kmer.first % (max_size * 8);  // hash modulus for frequency map
-
-            {
-                std::lock_guard<std::mutex> lock(kmer_mutex);
-                auto& counts = kmer_counts[key];
-                if (kmer.second) {
-                    counts.second += 1.0;  // methylated
-                } else {
-                    counts.first += 1.0;   // unmethylated
-                }
-            }
-        }
-    }
-
-    if (!pair.second.empty()) {
-        std::cerr << "read2" << std::endl;
-        btllib::SeqReader reader2(r2_file, btllib::SeqReader::Flag::SHORT_MODE, 15);
-
-        #pragma omp parallel
-        for (const auto record : reader2) {
-            if (record.seq.size() < k) {
-                continue;
-            }
-            if (calculate_avg_phred(record.qual) < 20) {
-                continue;
-            }
-            if (calculate_c_percentage(record.seq) > 6) {
-                continue;
-            }
-
-            std::vector<std::pair<uint64_t, bool>> all_kmers;
-            all_kmers = get_all_methylation_kmers(record.seq, k, clean_ct_mers, clean_ga_mers);
-
-            for (const auto& kmer : all_kmers) {
-                size_t idx = hash_to_loc_map[kmer.first % (max_size * 8)];
-                final_bf[idx] = 1;
-                if (kmer.second) {
-                    final_meth_bf[idx] = 1;
-                }
-
-                // Track methylation/unmethylation counts
-                uint64_t key = kmer.first % (max_size * 8);  // hash modulus for frequency map
-
-                {
-                    std::lock_guard<std::mutex> lock(kmer_mutex);
-                    auto& counts = kmer_counts[key];
-                    if (kmer.second) {
-                        counts.second += 1.0;  // methylated
-                    } else {
-                        counts.first += 1.0;   // unmethylated
+                    if (central_dimer == "CA") {
+                        if (prelim_ga_mers.contains(bh_ga.hashes())) {
+                            clean_ga_mers.insert(bh_ga.hashes());
+                            methylated_kmers_in_dataset.insert(bh_ga.hashes());
+                        }
                     }
                 }
             }
+            kseq_destroy(seq);
+            gzclose(fp1);
+        }
+
+        if (!job.r2_file.empty()) {
+            gzFile fp2 = gzopen(job.r2_file.c_str(), "r");
+            if (fp2) {
+                kseq_t* seq = kseq_init(fp2);
+                while (kseq_read(seq) >= 0) {
+                    std::string record_seq(seq->seq.s, seq->seq.l);
+                    std::string record_qual = seq->qual.l > 0 ? std::string(seq->qual.s, seq->qual.l) : "";
+
+                    if (record_seq.size() < k) continue;
+                    if (calculate_avg_phred(record_qual) < 20) continue;
+                    if (calculate_c_percentage(record_seq) > 6) continue;
+
+                    btllib::BsHashDirectional bh(record_seq, 3, k, "CT");
+                    btllib::BsHashDirectional bh_ga(record_seq, 3, k, "GA");
+                    
+                    while(bh.roll() && bh_ga.roll()) {
+                        auto central_dimer = bh.center_dimer();
+                        if (central_dimer == "TG") {
+                            if (prelim_ct_mers.contains(bh.hashes())) {
+                                clean_ct_mers.insert(bh.hashes());
+                                methylated_kmers_in_dataset.insert(bh.hashes());
+                            }
+                        }
+                        if (central_dimer == "CA") {
+                            if (prelim_ga_mers.contains(bh_ga.hashes())) {
+                                clean_ga_mers.insert(bh_ga.hashes());
+                                methylated_kmers_in_dataset.insert(bh_ga.hashes());
+                            }
+                        }
+                    }
+                }
+                kseq_destroy(seq);
+                gzclose(fp2);
+            }
         }
     }
 
-    // --- Update Auxiliary Structures for Entropy ---
+    std::unordered_map<uint64_t, size_t> hash_to_loc_map;
+
+    std::cerr << "Mapping Bloom Filter" << std::endl;
+    std::atomic<size_t> bfSize(0);
+
     #pragma omp parallel for schedule(static)
-    for (size_t i = 0; i < bfSize; ++i) {
-        if (final_bf[i] == 1) {
-            if (final_meth_bf[i] == 1) {
-                // Safe because each thread is operating on a unique index 'i'
-                global_meth_counts[i]++;
-            } else {
-                global_unmeth_counts[i]++;
+    for (uint64_t i = 0; i < max_size * 8; ++i) {
+        if (methylated_kmers_in_dataset.contains({i})) {
+            size_t index = bfSize.fetch_add(1, std::memory_order_relaxed);
+            #pragma omp critical
+            {
+                hash_to_loc_map[i] = index;
             }
         }
     }
-
-    // --- Save Vectors to Disk ---
-    std::string bf_file = prefix + "_bf.bin";
-    std::string meth_file = prefix + "_meth.bin";
-
-    std::ofstream bf_out(bf_file, std::ios::binary);
-    bf_out.write(reinterpret_cast<const char*>(final_bf.data()), final_bf.size());
-    bf_out.close();
-
-    std::ofstream meth_out(meth_file, std::ios::binary);
-    meth_out.write(reinterpret_cast<const char*>(final_meth_bf.data()), final_meth_bf.size());
-    meth_out.close();
-
-    bf_filenames.push_back(bf_file);
-    meth_filenames.push_back(meth_file);
-
-    // final_bf and final_meth_bf are automatically destroyed here, freeing RAM
-}
-
-double total_occurrences = 0.0;
-
-// Step 1: Sum total counts across all k-mers
-for (const auto& [_, counts] : kmer_counts) {
-    total_occurrences += counts.first + counts.second;
-}
-
-// Step 2: Replace each entry with TF-IDF
-for (auto& [key, counts] : kmer_counts) {
-    double total = counts.first + counts.second;
-    if (total == 0.0) continue;
-
-    double tf_unmeth = counts.first / total;
-    double tf_meth = counts.second / total;
-
-    // Use inverse TF as weights (to penalize frequent terms)
-    double inv_tf_unmeth = (tf_unmeth > 0.0) ? 1.0 / tf_unmeth : 0.0;
-    double inv_tf_meth   = (tf_meth   > 0.0) ? 1.0 / tf_meth   : 0.0;
-
-    // Scale so the larger one is 1.0, and the other is relative to it
-    double max_val = std::max(inv_tf_unmeth, inv_tf_meth);
-    if (max_val > 0.0) {
-        counts.first  = inv_tf_unmeth / max_val;
-        counts.second = inv_tf_meth   / max_val;
-    } else {
-        counts.first = 0.0;
-        counts.second = 0.0;
-    }
-}
-
-std::cerr << "calculating stats" << std::endl;
-std::cerr << "using tf inverse" << std::endl;
-
-std::ofstream output_hamming("hamming.tsv");
-std::ofstream output_cosine("cosine.tsv");
-std::ofstream output_pearson("pearson.tsv");
-
-if (!output_hamming.is_open() || !output_cosine.is_open() || !output_pearson.is_open()) {
-    std::cerr << "Unable to open output file(s)\n";
-    return 1;
-}
-
-// Identify top 20% sites (Sorting is typically fast enough on main thread)
-std::vector<size_t> indices(bfSize);
-std::iota(indices.begin(), indices.end(), 0);
-std::sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
-    // Total occurrences is simply meth + unmeth
-    return (global_unmeth_counts[a] + global_meth_counts[a]) > (global_unmeth_counts[b] + global_meth_counts[b]);
-});
-
-size_t top20_limit = static_cast<size_t>(bfSize * 1);
-std::vector<size_t> top_observed_indices(indices.begin(), indices.begin() + top20_limit);
-
-struct SiteInfo {
-    size_t index;
-    double entropy;
-};
-
-std::vector<SiteInfo> site_results(top20_limit);
-
-#pragma omp parallel for schedule(dynamic)
-for (size_t idx = 0; idx < top20_limit; ++idx) {
-    size_t k = top_observed_indices[idx];
     
-    // Read directly from the updated global auxiliary structure
-    uint32_t count0 = global_unmeth_counts[k];
-    uint32_t count1 = global_meth_counts[k];
+    std::unordered_map<uint64_t, std::pair<double, double>> kmer_counts;
+    std::mutex kmer_mutex;
+    
+    std::cerr << "bfSize: " <<  bfSize << std::endl;
+    std::cerr << "making bit vector" << std::endl;
 
-    double total = count0 + count1;
-    double entropy = 0.0;
-    if (total > 0) {
-        double p0 = count0 / total;
-        double p1 = count1 / total;
-        if (p0 > 0) entropy -= p0 * std::log2(p0);
-        if (p1 > 0) entropy -= p1 * std::log2(p1);
+    std::vector<uint32_t> global_unmeth_counts(bfSize, 0);
+    std::vector<uint32_t> global_meth_counts(bfSize, 0);
+
+    std::vector<std::string> bf_filenames(flat_jobs.size());
+    std::vector<std::string> meth_filenames(flat_jobs.size());
+
+    // ==========================================
+    // 4TH PASS (Matrix Generation)
+    // ==========================================
+    #pragma omp parallel for schedule(dynamic)
+    for (size_t i = 0; i < flat_jobs.size(); ++i) {
+        const auto& job = flat_jobs[i];
+
+        std::vector<uint8_t> final_bf(bfSize, 0);
+        std::vector<uint8_t> final_meth_bf(bfSize, 0);
+
+        gzFile fp1 = gzopen(job.r1_file.c_str(), "r");
+        if (fp1) {
+            kseq_t* seq = kseq_init(fp1);
+            while (kseq_read(seq) >= 0) {
+                std::string record_seq(seq->seq.s, seq->seq.l);
+                std::string record_qual = seq->qual.l > 0 ? std::string(seq->qual.s, seq->qual.l) : "";
+
+                if (record_seq.size() < k) continue;
+                if (calculate_c_percentage(record_seq) > 6) continue;
+                if (calculate_avg_phred(record_qual) < 20) continue;
+
+                std::vector<std::pair<uint64_t, bool>> all_kmers = get_all_methylation_kmers(record_seq, k, clean_ct_mers, clean_ga_mers);
+
+                for (const auto& kmer : all_kmers) {
+                    size_t idx = hash_to_loc_map[kmer.first % (max_size * 8)];
+                    final_bf[idx] = 1;
+                    if (kmer.second) {
+                        final_meth_bf[idx] = 1;
+                    }
+
+                    uint64_t key = kmer.first % (max_size * 8); 
+                    {
+                        std::lock_guard<std::mutex> lock(kmer_mutex);
+                        auto& counts = kmer_counts[key];
+                        if (kmer.second) {
+                            counts.second += 1.0; 
+                        } else {
+                            counts.first += 1.0;  
+                        }
+                    }
+                }
+            }
+            kseq_destroy(seq);
+            gzclose(fp1);
+        }
+
+        if (!job.r2_file.empty()) {
+            gzFile fp2 = gzopen(job.r2_file.c_str(), "r");
+            if (fp2) {
+                kseq_t* seq = kseq_init(fp2);
+                while (kseq_read(seq) >= 0) {
+                    std::string record_seq(seq->seq.s, seq->seq.l);
+                    std::string record_qual = seq->qual.l > 0 ? std::string(seq->qual.s, seq->qual.l) : "";
+
+                    if (record_seq.size() < k) continue;
+                    if (calculate_avg_phred(record_qual) < 20) continue;
+                    if (calculate_c_percentage(record_seq) > 6) continue;
+
+                    std::vector<std::pair<uint64_t, bool>> all_kmers = get_all_methylation_kmers(record_seq, k, clean_ct_mers, clean_ga_mers);
+
+                    for (const auto& kmer : all_kmers) {
+                        size_t idx = hash_to_loc_map[kmer.first % (max_size * 8)];
+                        final_bf[idx] = 1;
+                        if (kmer.second) {
+                            final_meth_bf[idx] = 1;
+                        }
+
+                        uint64_t key = kmer.first % (max_size * 8); 
+                        {
+                            std::lock_guard<std::mutex> lock(kmer_mutex);
+                            auto& counts = kmer_counts[key];
+                            if (kmer.second) {
+                                counts.second += 1.0; 
+                            } else {
+                                counts.first += 1.0;  
+                            }
+                        }
+                    }
+                }
+                kseq_destroy(seq);
+                gzclose(fp2);
+            }
+        }
+
+        for (size_t j = 0; j < bfSize; ++j) {
+            if (final_bf[j] == 1) {
+                if (final_meth_bf[j] == 1) {
+                    #pragma omp atomic
+                    global_meth_counts[j]++;
+                } else {
+                    #pragma omp atomic
+                    global_unmeth_counts[j]++;
+                }
+            }
+        }
+
+        std::string bf_file = job.prefix + "_" + std::to_string(i) + "_bf.bin";
+        std::string meth_file = job.prefix + "_" + std::to_string(i) + "_meth.bin";
+
+        std::ofstream bf_out(bf_file, std::ios::binary);
+        bf_out.write(reinterpret_cast<const char*>(final_bf.data()), final_bf.size());
+        bf_out.close();
+
+        std::ofstream meth_out(meth_file, std::ios::binary);
+        meth_out.write(reinterpret_cast<const char*>(final_meth_bf.data()), final_meth_bf.size());
+        meth_out.close();
+
+        bf_filenames[i] = bf_file;
+        meth_filenames[i] = meth_file;
     }
-    site_results[idx] = {k, entropy};
-}
 
-// Filter to top 50,000 sites by entropy
-std::sort(site_results.begin(), site_results.end(), [](const SiteInfo& a, const SiteInfo& b) {
-    return a.entropy > b.entropy;
-});
+    double total_occurrences = 0.0;
 
-std::cerr << "total CG signals count: " << bfSize << std::endl; 
-size_t final_count = std::min((size_t)20000000, site_results.size());
-std::vector<size_t> final_indices(final_count);
-for (size_t i = 0; i < final_count; ++i) final_indices[i] = site_results[i].index;
+    for (const auto& [_, counts] : kmer_counts) {
+        total_occurrences += counts.first + counts.second;
+    }
 
-// export_matrices will need to be updated to accept vectors of filenames
-// instead of the in-memory bf and meth_bf matrices.
-export_matrices(bf_filenames, meth_filenames, final_indices, sample_names, dev);
+    for (auto& [key, counts] : kmer_counts) {
+        double total = counts.first + counts.second;
+        if (total == 0.0) continue;
 
+        double tf_unmeth = counts.first / total;
+        double tf_meth = counts.second / total;
 
-// --- START CLEANUP AND TIMING ---
+        double inv_tf_unmeth = (tf_unmeth > 0.0) ? 1.0 / tf_unmeth : 0.0;
+        double inv_tf_meth   = (tf_meth   > 0.0) ? 1.0 / tf_meth   : 0.0;
+
+        double max_val = std::max(inv_tf_unmeth, inv_tf_meth);
+        if (max_val > 0.0) {
+            counts.first  = inv_tf_unmeth / max_val;
+            counts.second = inv_tf_meth   / max_val;
+        } else {
+            counts.first = 0.0;
+            counts.second = 0.0;
+        }
+    }
+
+    std::cerr << "calculating stats" << std::endl;
+    std::cerr << "using tf inverse" << std::endl;
+
+    std::ofstream output_hamming("hamming.tsv");
+    std::ofstream output_cosine("cosine.tsv");
+    std::ofstream output_pearson("pearson.tsv");
+
+    if (!output_hamming.is_open() || !output_cosine.is_open() || !output_pearson.is_open()) {
+        std::cerr << "Unable to open output file(s)\n";
+        return 1;
+    }
+
+    std::vector<size_t> indices(bfSize);
+    std::iota(indices.begin(), indices.end(), 0);
+    std::sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
+        return (global_unmeth_counts[a] + global_meth_counts[a]) > (global_unmeth_counts[b] + global_meth_counts[b]);
+    });
+
+    size_t top20_limit = static_cast<size_t>(bfSize * 1);
+    std::vector<size_t> top_observed_indices(indices.begin(), indices.begin() + top20_limit);
+
+    struct SiteInfo {
+        size_t index;
+        double entropy;
+    };
+
+    std::vector<SiteInfo> site_results(top20_limit);
+
+    #pragma omp parallel for schedule(dynamic)
+    for (size_t idx = 0; idx < top20_limit; ++idx) {
+        size_t k_idx = top_observed_indices[idx];
+        
+        uint32_t count0 = global_unmeth_counts[k_idx];
+        uint32_t count1 = global_meth_counts[k_idx];
+
+        double total = count0 + count1;
+        double entropy = 0.0;
+        if (total > 0) {
+            double p0 = count0 / total;
+            double p1 = count1 / total;
+            if (p0 > 0) entropy -= p0 * std::log2(p0);
+            if (p1 > 0) entropy -= p1 * std::log2(p1);
+        }
+        site_results[idx] = {k_idx, entropy};
+    }
+
+    std::sort(site_results.begin(), site_results.end(), [](const SiteInfo& a, const SiteInfo& b) {
+        return a.entropy > b.entropy;
+    });
+
+    std::cerr << "total CG signals count: " << bfSize << std::endl; 
+    size_t final_count = std::min((size_t)20000000, site_results.size());
+    std::vector<size_t> final_indices(final_count);
+    for (size_t i = 0; i < final_count; ++i) final_indices[i] = site_results[i].index;
+
+    export_matrices(bf_filenames, meth_filenames, final_indices, sample_names, dev);
+
     std::cerr << "Cleaning up temporary disk files..." << std::endl;
     auto cleanup_start = std::chrono::high_resolution_clock::now();
 
@@ -1356,8 +1210,6 @@ export_matrices(bf_filenames, meth_filenames, final_indices, sample_names, dev);
     std::chrono::duration<double> cleanup_duration = cleanup_end - cleanup_start;
     
     std::cerr << "File cleanup completed in " << cleanup_duration.count() << " seconds." << std::endl;
-    // --- END CLEANUP AND TIMING ---
 
     return 0;
-
 }
